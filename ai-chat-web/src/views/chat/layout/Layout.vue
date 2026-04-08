@@ -16,8 +16,6 @@ const chatStore = useChatStore()
 router.replace({ name: 'Chat', params: { uuid: chatStore.active } })
 
 const { isMobile } = useBasicLayout()
-
-const collapsed = computed(() => appStore.siderCollapsed)
 /*
 onBeforeMount(() => {
   const access_token = getCookieValue('sso_0voice_access_token')
@@ -37,8 +35,10 @@ const getMobileClass = computed(() => {
 const getContainerClass = computed(() => {
   return [
     'h-full',
-    // { 'pl-[260px]': !isMobile.value && !collapsed.value },
-    // { 'right-[0]': !isMobile.value && !collapsed.value },
+    {
+      'pl-[260px]': !isMobile.value && !appStore.siderCollapsed,
+      'right-[0]': !isMobile.value && !appStore.siderCollapsed,
+    },
   ]
 })
 </script>

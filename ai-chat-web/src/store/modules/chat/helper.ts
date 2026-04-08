@@ -7,6 +7,8 @@ export function defaultState(): Chat.ChatState {
   return {
     active: uuid,
     usingContext: true,
+    activeProvider: 'openai',
+    activeModel: 'gpt-3.5-turbo',
     history: [{ uuid, title: 'New Chat', isEdit: false }],
     chat: [{ uuid, data: [] }],
   }

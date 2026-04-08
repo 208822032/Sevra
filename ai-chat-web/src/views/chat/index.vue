@@ -3,7 +3,7 @@ import type { Ref } from 'vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { NAutoComplete, NButton, NInput, useDialog, useMessage } from 'naive-ui'
+import { NAutoComplete, NButton, NInput, NSelect, useDialog, useMessage } from 'naive-ui'
 import html2canvas from 'html2canvas'
 import { Message } from './components'
 import { useScroll } from './hooks/useScroll'
@@ -12,10 +12,14 @@ import { useCopyCode } from './hooks/useCopyCode'
 import { useUsingContext } from './hooks/useUsingContext'
 import HeaderComponent from './components/Header/index.vue'
 import { HoverButton, SvgIcon } from '@/components/common'
+import assistantAvatar from '@/assets/assistant-avatar.svg'
+import { APP_NAME, APP_TAGLINE } from '@/constants/branding'
 import { useBasicLayout } from '@/hooks/useBasicLayout'
 import { useChatStore, usePromptStore } from '@/store'
-import { fetchChatAPIProcess } from '@/api'
+import { fetchChatAPIProcess, fetchChatConfig } from '@/api'
 import { t } from '@/locales'
+import { extractLatestStreamChunk } from '@/utils/chatStream'
+import { formatModelOptionLabel, formatProviderOptionLabel, normalizeConversationResponse, resolveCatalogSelection } from '@/utils/modelCatalog'
 
 let controller = new AbortController()
 
@@ -37,17 +41,86 @@ const { usingContext, toggleUsingContext } = useUsingContext()
 const { uuid } = route.params as { uuid: string }
 
 const dataSources = computed(() => chatStore.getChatByUuid(+uuid))
+const currentChatHistory = computed(() => chatStore.getChatHistoryByCurrentActive)
 const conversationList = computed(() => dataSources.value.filter(item => (!item.inversion && !item.error)))
 
 const prompt = ref<string>('')
 const loading = ref<boolean>(false)
 const inputRef = ref<Ref | null>(null)
+const modelCatalog = ref<Chat.ChatConfigResponse | null>(null)
+const catalogLoading = ref(false)
+const catalogError = ref('')
 
 // 添加PromptStore
 const promptStore = usePromptStore()
 
 // 使用storeToRefs，保证store修改后，联想部分能够重新渲染
-const { promptList: promptTemplate } = storeToRefs<any>(promptStore)
+const { promptList: promptTemplate } = storeToRefs(promptStore)
+
+const providerCatalog = computed(() => modelCatalog.value?.providers ?? [])
+const currentProviderEntry = computed(() => providerCatalog.value.find(provider => provider.provider === chatStore.activeProvider) ?? null)
+const currentModelEntries = computed(() => currentProviderEntry.value?.models ?? [])
+
+const providerOptions = computed(() => providerCatalog.value.map(provider => ({
+  label: formatProviderOptionLabel(provider),
+  value: provider.provider,
+  disabled: !provider.enabled,
+})))
+
+const modelOptions = computed(() => currentModelEntries.value.map(model => ({
+  label: formatModelOptionLabel(model),
+  value: model.model,
+  disabled: !model.enabled,
+})))
+
+function syncSelectionFromCatalog() {
+  const resolved = resolveCatalogSelection(modelCatalog.value, chatStore.activeProvider, chatStore.activeModel)
+  if (resolved && (resolved.provider !== chatStore.activeProvider || resolved.model !== chatStore.activeModel))
+    chatStore.setModelSelection(resolved.provider, resolved.model)
+}
+
+function handleProviderChange(provider: string) {
+  const resolved = resolveCatalogSelection(modelCatalog.value, provider, chatStore.activeModel)
+  if (resolved)
+    chatStore.setModelSelection(resolved.provider, resolved.model)
+}
+
+function handleModelChange(model: string) {
+  const resolved = resolveCatalogSelection(modelCatalog.value, chatStore.activeProvider, model)
+  if (resolved)
+    chatStore.setModelSelection(resolved.provider, resolved.model)
+}
+
+async function loadModelCatalog() {
+  try {
+    catalogLoading.value = true
+    catalogError.value = ''
+    modelCatalog.value = null
+    const { data } = await fetchChatConfig<Chat.ChatConfigResponse>()
+    modelCatalog.value = data
+    syncSelectionFromCatalog()
+  }
+  catch (error: any) {
+    catalogError.value = error?.message ?? '模型列表加载失败'
+  }
+  finally {
+    catalogLoading.value = false
+  }
+}
+
+function buildRequestOptions(
+  message: string,
+  options: Chat.ConversationRequest | null,
+  provider = chatStore.activeProvider,
+  model = chatStore.activeModel,
+) {
+  return {
+    prompt: message,
+    options: options ? { ...options } : null,
+    provider,
+    model,
+  }
+}
 
 // 未知原因刷新页面，loading 状态不会重置，手动重置
 dataSources.value.forEach((item, index) => {
@@ -69,6 +142,8 @@ async function onConversation() {
     return
 
   controller = new AbortController()
+  const requestProvider = chatStore.activeProvider
+  const requestModel = chatStore.activeModel
 
   addChat(
     +uuid,
@@ -78,7 +153,7 @@ async function onConversation() {
       inversion: true,
       error: false,
       conversationOptions: null,
-      requestOptions: { prompt: message, options: null },
+      requestOptions: buildRequestOptions(message, null, requestProvider, requestModel),
     },
   )
   scrollToBottom()
@@ -101,7 +176,7 @@ async function onConversation() {
       inversion: false,
       error: false,
       conversationOptions: null,
-      requestOptions: { prompt: message, options: { ...options } },
+      requestOptions: buildRequestOptions(message, { ...options }, requestProvider, requestModel),
     },
   )
   scrollToBottom()
@@ -112,32 +187,33 @@ async function onConversation() {
       await fetchChatAPIProcess<Chat.ConversationResponse>({
         prompt: message,
         options,
+        provider: requestProvider,
+        model: requestModel,
         signal: controller.signal,
         onDownloadProgress: ({ event }) => {
           const xhr = event.target
           const { responseText } = xhr
-          // Always process the final line
-          const lastIndex = responseText.lastIndexOf('\n', responseText.length - 2)
-          let chunk = responseText
-          if (lastIndex !== -1)
-            chunk = responseText.substring(lastIndex)
+          const chunk = extractLatestStreamChunk(responseText)
           try {
-            const data = JSON.parse(chunk)
+            const data = normalizeConversationResponse(JSON.parse(chunk))
             updateChat(
               +uuid,
               dataSources.value.length - 1,
               {
                 dateTime: new Date().toLocaleString(),
-                text: lastText + data.text ?? '',
+                text: `${lastText}${data.text ?? ''}`,
                 inversion: false,
                 error: false,
                 loading: false,
-                conversationOptions: { conversationId: data.conversationId, parentMessageId: data.id },
-                requestOptions: { prompt: message, options: { ...options } },
+                conversationOptions: { conversationId: data.conversationId || data.sessionId || data.id, parentMessageId: data.id },
+                trace: data.trace,
+                usage: data.usage,
+                budget: data.budget,
+                requestOptions: buildRequestOptions(message, { ...options }, requestProvider, requestModel),
               },
             )
 
-            if (openLongReply && data.detail.choices[0].finish_reason === 'length') {
+            if (openLongReply && data.detail?.choices?.[0]?.finish_reason === 'length') {
               options.parentMessageId = data.id
               lastText = data.text
               message = ''
@@ -195,7 +271,7 @@ async function onConversation() {
         error: true,
         loading: false,
         conversationOptions: null,
-        requestOptions: { prompt: message, options: { ...options } },
+        requestOptions: buildRequestOptions(message, { ...options }, requestProvider, requestModel),
       },
     )
     scrollToBottomIfAtBottom()
@@ -220,6 +296,9 @@ async function onRegenerate(index: number) {
   if (requestOptions.options)
     options = { ...requestOptions.options }
 
+  const requestProvider = requestOptions.provider || chatStore.activeProvider
+  const requestModel = requestOptions.model || chatStore.activeModel
+
   loading.value = true
 
   updateChat(
@@ -232,7 +311,12 @@ async function onRegenerate(index: number) {
       error: false,
       loading: true,
       conversationOptions: null,
-      requestOptions: { prompt: message, ...options },
+      requestOptions: {
+        prompt: message,
+        options: { ...options },
+        provider: requestProvider,
+        model: requestModel,
+      },
     },
   )
 
@@ -242,32 +326,38 @@ async function onRegenerate(index: number) {
       await fetchChatAPIProcess<Chat.ConversationResponse>({
         prompt: message,
         options,
+        provider: requestProvider,
+        model: requestModel,
         signal: controller.signal,
         onDownloadProgress: ({ event }) => {
           const xhr = event.target
           const { responseText } = xhr
-          // Always process the final line
-          const lastIndex = responseText.lastIndexOf('\n', responseText.length - 2)
-          let chunk = responseText
-          if (lastIndex !== -1)
-            chunk = responseText.substring(lastIndex)
+          const chunk = extractLatestStreamChunk(responseText)
           try {
-            const data = JSON.parse(chunk)
+            const data = normalizeConversationResponse(JSON.parse(chunk))
             updateChat(
               +uuid,
               index,
               {
                 dateTime: new Date().toLocaleString(),
-                text: lastText + data.text ?? '',
+                text: `${lastText}${data.text ?? ''}`,
                 inversion: false,
                 error: false,
                 loading: false,
-                conversationOptions: { conversationId: data.conversationId, parentMessageId: data.id },
-                requestOptions: { prompt: message, ...options },
+                conversationOptions: { conversationId: data.conversationId || data.sessionId || data.id, parentMessageId: data.id },
+                trace: data.trace,
+                usage: data.usage,
+                budget: data.budget,
+                requestOptions: {
+                  prompt: message,
+                  options: { ...options },
+                  provider: requestProvider,
+                  model: requestModel,
+                },
               },
             )
 
-            if (openLongReply && data.detail.choices[0].finish_reason === 'length') {
+            if (openLongReply && data.detail?.choices?.[0]?.finish_reason === 'length') {
               options.parentMessageId = data.id
               lastText = data.text
               message = ''
@@ -306,7 +396,12 @@ async function onRegenerate(index: number) {
         error: true,
         loading: false,
         conversationOptions: null,
-        requestOptions: { prompt: message, ...options },
+        requestOptions: {
+          prompt: message,
+          options: { ...options },
+          provider: requestProvider,
+          model: requestModel,
+        },
       },
     )
   }
@@ -453,6 +548,7 @@ const footerClass = computed(() => {
 })
 
 onMounted(() => {
+  void loadModelCatalog()
   scrollToBottom()
   if (inputRef.value && !isMobile.value)
     inputRef.value?.focus()
@@ -465,7 +561,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex flex-col w-full h-full">
+  <div class="flex h-full w-full flex-col">
     <HeaderComponent
       v-if="isMobile"
       :using-context="usingContext"
@@ -480,81 +576,154 @@ onUnmounted(() => {
       >
         <div
           id="image-wrapper"
-          class="w-full max-w-screen-xl m-auto dark:bg-[#101014]"
+          class="relative m-auto w-full max-w-screen-xl overflow-hidden rounded-[32px] border border-white/70 bg-white/80 shadow-[0_24px_80px_rgba(15,23,42,0.08)] backdrop-blur-xl dark:border-white/10 dark:bg-[#0b1020]/85"
           :class="[isMobile ? 'p-2' : 'p-4']"
         >
-          <template v-if="!dataSources.length">
-            <div class="flex items-center justify-center mt-4 text-center text-neutral-300">
-              <SvgIcon icon="ri:bubble-chart-fill" class="mr-2 text-3xl" />
-              <span>Aha~</span>
-            </div>
-          </template>
-          <template v-else>
-            <div>
-              <Message
-                v-for="(item, index) of dataSources"
-                :key="index"
-                :date-time="item.dateTime"
-                :text="item.text"
-                :inversion="item.inversion"
-                :error="item.error"
-                :loading="item.loading"
-                @regenerate="onRegenerate(index)"
-                @delete="handleDelete(index)"
-              />
-              <div class="sticky bottom-0 left-0 flex justify-center">
-                <NButton v-if="loading" type="warning" @click="handleStop">
-                  <template #icon>
-                    <SvgIcon icon="ri:stop-circle-line" />
-                  </template>
-                  Stop Responding
-                </NButton>
+          <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.08),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_26%)] dark:bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.08),_transparent_28%),radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_26%)]" />
+          <div class="relative z-10">
+            <div
+              v-if="!isMobile"
+              class="mb-4 flex items-center justify-between gap-4 rounded-[28px] border border-white/70 bg-white/75 px-4 py-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5"
+            >
+              <div class="flex min-w-0 items-center gap-3">
+                <div class="h-11 w-11 overflow-hidden rounded-2xl border border-white/70 bg-white/80 p-1 shadow-sm dark:border-white/10 dark:bg-white/5">
+                  <img :src="assistantAvatar" alt="知澜助手" class="h-full w-full rounded-[14px] object-cover" />
+                </div>
+                <div class="min-w-0">
+                  <p class="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-400">
+                    {{ APP_NAME }}
+                  </p>
+                  <p class="truncate text-sm font-medium text-slate-700 dark:text-slate-200">
+                    {{ APP_TAGLINE }}
+                  </p>
+                </div>
+              </div>
+              <div class="hidden items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 sm:flex">
+                <span class="rounded-full border border-slate-200/70 bg-white/70 px-2.5 py-1 dark:border-white/10 dark:bg-white/5">
+                  {{ usingContext ? '上下文开启' : '上下文关闭' }}
+                </span>
+                <span
+                  v-if="currentChatHistory"
+                  class="max-w-[16rem] truncate rounded-full border border-slate-200/70 bg-white/70 px-2.5 py-1 dark:border-white/10 dark:bg-white/5"
+                >
+                  {{ currentChatHistory.title }}
+                </span>
               </div>
             </div>
-          </template>
+
+            <template v-if="!dataSources.length">
+              <div class="flex min-h-[52vh] flex-col items-center justify-center px-4 text-center">
+                <div class="h-16 w-16 overflow-hidden rounded-[28px] border border-white/70 bg-white/80 p-1.5 shadow-sm dark:border-white/10 dark:bg-white/5">
+                  <img :src="assistantAvatar" alt="知澜助手" class="h-full w-full rounded-[22px] object-cover" />
+                </div>
+                <p class="mt-5 text-lg font-semibold text-slate-900 dark:text-white">
+                  {{ APP_NAME }}
+                </p>
+                <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                  {{ APP_TAGLINE }}
+                </p>
+                <p class="mt-3 max-w-lg text-xs leading-6 text-slate-400 dark:text-slate-500">
+                  模型切换、上下文续写和检索状态会以轻量辅助信息呈现，正文保持干净。
+                </p>
+              </div>
+            </template>
+
+            <template v-else>
+              <div>
+                <Message
+                  v-for="(item, index) of dataSources"
+                  :key="index"
+                  :date-time="item.dateTime"
+                  :text="item.text"
+                  :inversion="item.inversion"
+                  :error="item.error"
+                  :loading="item.loading"
+                  :trace="item.trace"
+                  :usage="item.usage"
+                  :budget="item.budget"
+                  @regenerate="onRegenerate(index)"
+                  @delete="handleDelete(index)"
+                />
+                <div class="sticky bottom-0 left-0 flex justify-center">
+                  <NButton v-if="loading" type="warning" @click="handleStop">
+                    <template #icon>
+                      <SvgIcon icon="ri:stop-circle-line" />
+                    </template>
+                    Stop Responding
+                  </NButton>
+                </div>
+              </div>
+            </template>
+          </div>
         </div>
       </div>
     </main>
+
     <footer :class="footerClass">
-      <div class="w-full max-w-screen-xl m-auto">
-        <div class="flex items-center justify-between space-x-2">
-          <HoverButton @click="handleClear">
-            <span class="text-xl text-[#4f555e] dark:text-white">
-              <SvgIcon icon="ri:delete-bin-line" />
-            </span>
-          </HoverButton>
-          <HoverButton v-if="!isMobile" @click="handleExport">
-            <span class="text-xl text-[#4f555e] dark:text-white">
-              <SvgIcon icon="ri:download-2-line" />
-            </span>
-          </HoverButton>
-          <HoverButton v-if="!isMobile" @click="toggleUsingContext">
-            <span class="text-xl" :class="{ 'text-[#4b9e5f]': usingContext, 'text-[#a8071a]': !usingContext }">
-              <SvgIcon icon="ri:chat-history-line" />
-            </span>
-          </HoverButton>
-          <NAutoComplete v-model:value="prompt" :options="searchOptions" :render-label="renderOption">
-            <template #default="{ handleInput, handleBlur, handleFocus }">
-              <NInput
-                ref="inputRef"
-                v-model:value="prompt"
-                type="textarea"
-                :placeholder="placeholder"
-                :autosize="{ minRows: 1, maxRows: isMobile ? 4 : 8 }"
-                @input="handleInput"
-                @focus="handleFocus"
-                @blur="handleBlur"
-                @keypress="handleEnter"
-              />
-            </template>
-          </NAutoComplete>
-          <NButton type="primary" :disabled="buttonDisabled" @click="handleSubmit">
-            <template #icon>
-              <span class="dark:text-black">
-                <SvgIcon icon="ri:send-plane-fill" />
+      <div class="w-full max-w-screen-xl m-auto rounded-[28px] border border-white/70 bg-white/85 p-3 shadow-[0_18px_60px_rgba(15,23,42,0.08)] backdrop-blur-xl dark:border-white/10 dark:bg-[#10151f]/85">
+        <div class="space-y-3">
+          <p v-if="catalogError" class="text-xs text-amber-500">
+            {{ catalogError }}
+          </p>
+          <div class="grid gap-2 md:grid-cols-2">
+            <NSelect
+              :value="chatStore.activeProvider"
+              :options="providerOptions"
+              :loading="catalogLoading"
+              :disabled="catalogLoading || !providerOptions.length"
+              size="small"
+              placeholder="选择 Provider"
+              @update:value="handleProviderChange"
+            />
+            <NSelect
+              :value="chatStore.activeModel"
+              :options="modelOptions"
+              :loading="catalogLoading"
+              :disabled="catalogLoading || !modelOptions.length"
+              size="small"
+              placeholder="选择 Model"
+              @update:value="handleModelChange"
+            />
+          </div>
+          <div class="flex items-center justify-between space-x-2">
+            <HoverButton @click="handleClear">
+              <span class="text-xl text-[#4f555e] dark:text-white">
+                <SvgIcon icon="ri:delete-bin-line" />
               </span>
-            </template>
-          </NButton>
+            </HoverButton>
+            <HoverButton v-if="!isMobile" @click="handleExport">
+              <span class="text-xl text-[#4f555e] dark:text-white">
+                <SvgIcon icon="ri:download-2-line" />
+              </span>
+            </HoverButton>
+            <HoverButton v-if="!isMobile" @click="toggleUsingContext">
+              <span class="text-xl" :class="{ 'text-[#4b9e5f]': usingContext, 'text-[#a8071a]': !usingContext }">
+                <SvgIcon icon="ri:chat-history-line" />
+              </span>
+            </HoverButton>
+            <NAutoComplete v-model:value="prompt" :options="searchOptions" :render-label="renderOption">
+              <template #default="{ handleInput, handleBlur, handleFocus }">
+                <NInput
+                  ref="inputRef"
+                  v-model:value="prompt"
+                  type="textarea"
+                  :placeholder="placeholder"
+                  :autosize="{ minRows: 1, maxRows: isMobile ? 4 : 8 }"
+                  @input="handleInput"
+                  @focus="handleFocus"
+                  @blur="handleBlur"
+                  @keypress="handleEnter"
+                />
+              </template>
+            </NAutoComplete>
+            <NButton type="primary" :disabled="buttonDisabled" @click="handleSubmit">
+              <template #icon>
+                <span class="dark:text-black">
+                  <SvgIcon icon="ri:send-plane-fill" />
+                </span>
+              </template>
+            </NButton>
+          </div>
         </div>
       </div>
     </footer>

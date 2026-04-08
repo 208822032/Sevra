@@ -22,6 +22,7 @@ message ChatParam {
   int32 minResponseTokens = 8[json_name = "min_response_tokens"];
   int32 contextTTL = 9[json_name = "context_ttl"];
   int32 contextLen = 10[json_name = "context_len"];
+  string provider = 11[json_name = "provider"];
 }
 
 // 服务响应消息，非流式响应

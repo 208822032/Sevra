@@ -2,23 +2,16 @@
 import type { CSSProperties } from 'vue'
 import { computed, ref, watch } from 'vue'
 import { NLayoutSider } from 'naive-ui'
-import { useAppStore, useChatStore } from '@/store'
+import { useAppStore } from '@/store'
 import { useBasicLayout } from '@/hooks/useBasicLayout'
 import { PromptStore } from '@/components/common'
 
 const appStore = useAppStore()
-const chatStore = useChatStore()
 
 const { isMobile } = useBasicLayout()
 const show = ref(false)
 
 const collapsed = computed(() => appStore.siderCollapsed)
-
-function handleAdd() {
-  chatStore.addHistory({ title: 'New Chat', uuid: Date.now(), isEdit: false })
-  if (isMobile.value)
-    appStore.setSiderCollapsed(true)
-}
 
 function handleUpdateCollapsed() {
   appStore.setSiderCollapsed(!collapsed.value)
@@ -61,7 +54,7 @@ watch(
 
 <template>
   <NLayoutSider
-    :collapsed="collapsed" :collapsed-width="0" collapse-mode="transform" position="static" :width="isMobile ? 260 : 500"
+    :collapsed="collapsed" :collapsed-width="0" collapse-mode="transform" position="static" :width="getWidth()"
     bordered :style="getMobileClass" class="bottom-0 top-0" @update-collapsed="handleUpdateCollapsed"
   >
     <div class="flex flex-col h-full p-6 bottom-0" :style="mobileSafeArea">

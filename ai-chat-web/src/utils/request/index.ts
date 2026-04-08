@@ -1,4 +1,4 @@
-import type { AxiosProgressEvent, AxiosResponse, GenericAbortSignal } from 'axios'
+import type { AxiosError, AxiosProgressEvent, AxiosResponse, GenericAbortSignal } from 'axios'
 import { deleteCookieByKey } from '../cookie/index'
 import request from './axios'
 import { useAuthStore } from '@/store'
@@ -36,7 +36,7 @@ function http<T = any>(
     return Promise.reject(res.data)
   }
 
-  const failHandler = (error: Response<Error>) => {
+  const failHandler = (error: AxiosError<Response<Error>>) => {
     if (error?.response?.status === 401) {
       // localStorage.access_token = ''
       // window.location.reload()

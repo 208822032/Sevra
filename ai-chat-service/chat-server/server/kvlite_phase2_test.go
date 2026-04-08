@@ -276,7 +276,7 @@ func TestSessionIDPreferredOverPIDCompat(t *testing.T) {
 		EnableContext: true,
 		ChatParam:     &proto.ChatParam{Model: "gpt-3.5-turbo", MaxTokens: 128, MinResponseTokens: 16, ContextLen: 2},
 	}
-	app := svc.newApp(in, store)
+	app := svc.newApp(in, store, false)
 	_, _, _, _, err := app.buildChatCompletionRequest(context.Background(), in, false)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
@@ -300,7 +300,7 @@ func TestCreateSessionWhenNoSessionIDAndNoPID(t *testing.T) {
 		Id:        "msg-new-session",
 		ChatParam: &proto.ChatParam{Model: "gpt-3.5-turbo", MaxTokens: 128, MinResponseTokens: 16, ContextLen: 2},
 	}
-	app := svc.newApp(in, store)
+	app := svc.newApp(in, store, false)
 	_, _, _, _, err := app.buildChatCompletionRequest(context.Background(), in, false)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
@@ -332,7 +332,7 @@ func TestKVLiteBasePromptUsesRecentTurnsOnly(t *testing.T) {
 		EnableContext: true,
 		ChatParam:     &proto.ChatParam{Model: "gpt-3.5-turbo", MaxTokens: 128, MinResponseTokens: 16, ContextLen: 4},
 	}
-	app := svc.newApp(in, store)
+	app := svc.newApp(in, store, false)
 	req, _, _, _, err := app.buildChatCompletionRequest(context.Background(), in, false)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
@@ -366,7 +366,7 @@ func TestKVLiteBasePromptDoesNotRequireSummary(t *testing.T) {
 		EnableContext: true,
 		ChatParam:     &proto.ChatParam{Model: "gpt-3.5-turbo", MaxTokens: 128, MinResponseTokens: 16, ContextLen: 4},
 	}
-	app := svc.newApp(in, store)
+	app := svc.newApp(in, store, false)
 	req, _, _, _, err := app.buildChatCompletionRequest(context.Background(), in, false)
 	if err != nil {
 		t.Fatalf("build request: %v", err)

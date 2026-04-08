@@ -2,7 +2,11 @@ package server
 
 import (
 	chat_context "ai-chat-service/chat-server/chat-context"
+	"ai-chat-service/chat-server/data"
+	"ai-chat-service/chat-server/llm"
 	metrics_bus "ai-chat-service/chat-server/metrics-bus"
+	"ai-chat-service/chat-server/provider"
+	vector_data "ai-chat-service/chat-server/vector-data"
 	"ai-chat-service/pkg/config"
 	"ai-chat-service/pkg/log"
 	"ai-chat-service/pkg/zerror"
@@ -35,20 +39,34 @@ type openaiConf struct {
 	ContextTTL        int
 	ContextLen        int
 	MinResponseTokens int
+	TimeoutMS         int
 }
 type app struct {
-	config        *config.Config
-	openaiConf    *openaiConf
-	log           log.ILogger
-	contextStore  chat_context.SessionStore
-	fastPathCache *sessionFastPathCache
-	busMetrics    *metrics_bus.BusMetrics
-	sessionID     string
-	pendingTurn   *chat_context.TurnRecord
-	pendingMeta   *chat_context.SessionMeta
+	config             *config.Config
+	openaiConf         *openaiConf
+	log                log.ILogger
+	contextStore       chat_context.SessionStore
+	data               data.IChatRecordsData
+	vectorData         vector_data.IChatRecordsData
+	providerRegistry   *provider.Registry
+	provider           provider.Provider
+	providerProfile    provider.ProviderProfile
+	selectedProvider   string
+	selectedModel      string
+	fallbackUsed       bool
+	fallbackReason     string
+	routeDecision      llm.RouteDecision
+	retrievalHits      []llm.RetrievalHit
+	promptTokensSource string
+	keywordsFn         func(context.Context, *proto.ChatCompletionRequest) []string
+	fastPathCache      *sessionFastPathCache
+	busMetrics         *metrics_bus.BusMetrics
+	sessionID          string
+	pendingTurn        *chat_context.TurnRecord
+	pendingMeta        *chat_context.SessionMeta
 }
 
-func (s *chatService) newApp(in *proto.ChatCompletionRequest, contextStore chat_context.SessionStore) *app {
+func (s *chatService) newApp(in *proto.ChatCompletionRequest, contextStore chat_context.SessionStore, stream bool) *app {
 	conf := &openaiConf{
 		ApiKey:            s.config.Chat.ApiKey,
 		BaseUrl:           s.config.Chat.BaseUrl,
@@ -62,11 +80,14 @@ func (s *chatService) newApp(in *proto.ChatCompletionRequest, contextStore chat_
 		ContextTTL:        s.config.Chat.ContextTTL,
 		ContextLen:        s.config.Chat.ContextLen,
 		MinResponseTokens: s.config.Chat.MinResponseTokens,
+		TimeoutMS:         60000,
+	}
+	registry := s.providerRegistry
+	if registry == nil {
+		registry = provider.NewRegistry(s.config.ProviderProfiles())
+		s.providerRegistry = registry
 	}
 	if in.ChatParam != nil {
-		if in.ChatParam.Model != "" {
-			conf.Model = in.ChatParam.Model
-		}
 		if in.ChatParam.TopP != 0 {
 			conf.TopP = in.ChatParam.TopP
 		}
@@ -95,13 +116,62 @@ func (s *chatService) newApp(in *proto.ChatCompletionRequest, contextStore chat_
 			conf.MinResponseTokens = int(in.ChatParam.MinResponseTokens)
 		}
 	}
+	selectedProvider := ""
+	selectedModel := ""
+	if in.ChatParam != nil {
+		selectedProvider = strings.TrimSpace(in.ChatParam.GetProvider())
+		selectedModel = strings.TrimSpace(in.ChatParam.GetModel())
+	}
+	selection, err := registry.ResolveSelection(selectedProvider, selectedModel, stream)
+	if err != nil {
+		s.log.Error(err)
+		if providerRef, profileRef, resolveErr := registry.Default(); resolveErr == nil {
+			selection = provider.SelectionResult{
+				RequestedProvider: selectedProvider,
+				RequestedModel:    selectedModel,
+				ActualProvider:    profileRef.Name,
+				ActualModel:       profileRef.DefaultChatModel(),
+				Provider:          providerRef,
+				Profile:           profileRef,
+				FallbackUsed:      true,
+				FallbackReason:    "registry_default",
+			}
+		} else {
+			selection = provider.SelectionResult{}
+		}
+	}
+	actualProfile := selection.Profile
+	actualProvider := selection.Provider
+	actualModel := selection.ActualModel
+	if actualModel == "" {
+		actualModel = conf.Model
+	}
+	if actualProfile.ContextWindow > 0 && conf.MaxTokens <= 0 {
+		conf.MaxTokens = actualProfile.ContextWindow
+	}
+	if actualProfile.DefaultReservedCompletionTokens > 0 && conf.MinResponseTokens <= 0 {
+		conf.MinResponseTokens = actualProfile.DefaultReservedCompletionTokens
+	}
+	if actualProfile.TimeoutMS > 0 {
+		conf.TimeoutMS = actualProfile.TimeoutMS
+	}
+	conf.Model = actualModel
 	return &app{
-		config:        s.config,
-		openaiConf:    conf,
-		log:           s.log,
-		contextStore:  contextStore,
-		fastPathCache: s.ensureFastPathCache(),
-		busMetrics:    s.busMetrics,
+		config:           s.config,
+		openaiConf:       conf,
+		log:              s.log,
+		contextStore:     contextStore,
+		data:             s.data,
+		vectorData:       s.vectorData,
+		providerRegistry: registry,
+		provider:         actualProvider,
+		providerProfile:  actualProfile,
+		selectedProvider: selectedProvider,
+		selectedModel:    selectedModel,
+		fallbackUsed:     selection.FallbackUsed,
+		fallbackReason:   selection.FallbackReason,
+		fastPathCache:    s.ensureFastPathCache(),
+		busMetrics:       s.busMetrics,
 	}
 }
 func (a *app) getOpenaiClient() *openai.Client {
@@ -152,6 +222,13 @@ func (a *app) loadSessionMetaFast(ctx context.Context) (*chat_context.SessionMet
 	return meta, nil
 }
 
+func (a *app) loadSessionSummaryFast(ctx context.Context) (*chat_context.SummaryRecord, error) {
+	if a == nil || a.sessionID == "" || a.contextStore == nil {
+		return nil, nil
+	}
+	return a.contextStore.LoadSummary(ctx, a.sessionID)
+}
+
 // 构建请求参数
 func (a *app) buildChatCompletionRequest(ctx context.Context, in *proto.ChatCompletionRequest, stream bool) (req openai.ChatCompletionRequest, tokens, currTokens int, currMessage openai.ChatCompletionMessage, err error) {
 	//当前消息
@@ -171,9 +248,10 @@ func (a *app) buildChatCompletionRequest(ctx context.Context, in *proto.ChatComp
 		FrequencyPenalty: a.openaiConf.FrequencyPenalty,
 		Stream:           stream,
 	}
+	a.promptTokensSource = llm.UsageSourceProvider
 	turns := make([]*chat_context.TurnRecord, 0)
 	baselineTurns := make([]*chat_context.TurnRecord, 0)
-	var meta *chat_context.SessionMeta
+	var summary *chat_context.SummaryRecord
 	if a.contextStore != nil {
 		err = a.resolveSession(ctx, in)
 		if err != nil {
@@ -192,22 +270,26 @@ func (a *app) buildChatCompletionRequest(ctx context.Context, in *proto.ChatComp
 				return
 			}
 			turns = baselineTurns
-			if a.fastPathCache != nil {
-				a.fastPathCache.PutMeta(meta)
+			summary, err = a.loadSessionSummaryFast(ctx)
+			if err != nil {
+				a.log.Error(err)
+				return
 			}
 		}
 	}
 	//重构req.Messages
-	tokens, currTokens, req.Messages, err = a.rebuildMessages(nil, turns, currMessage)
+	tokens, currTokens, req.Messages, err = a.rebuildMessages(summary, turns, currMessage)
 	if err != nil {
 		a.log.Error(err)
 		return
 	}
 	if a.busMetrics != nil && len(baselineTurns) > 0 {
+		savedPromptTokensSource := a.promptTokensSource
 		beforeTokens, _, _, beforeErr := a.rebuildMessages(nil, baselineTurns, currMessage)
 		if beforeErr == nil {
 			_ = beforeTokens
 		}
+		a.promptTokensSource = savedPromptTokensSource
 	}
 	if a.contextStore != nil {
 		seq, allocErr := a.contextStore.AllocateTurnSeq(ctx, a.sessionID)
@@ -265,43 +347,65 @@ func (a *app) rebuildMessages(summary *chat_context.SummaryRecord, turns []*chat
 	//系统消息和当前消息的tokens数
 	var sysMessage openai.ChatCompletionMessage
 	botTokens := 0
+	var botTokenSource string
 	if a.openaiConf.BotDesc != "" {
 		sysMessage = openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleSystem,
 			Content: a.openaiConf.BotDesc,
 		}
-		botTokens, err = tokenizer.GetTokens(&sysMessage, a.openaiConf.Model)
+		botTokens, botTokenSource, err = tokenizer.GetTokensWithSource(&sysMessage, a.openaiConf.Model)
 		if err != nil {
 			a.log.Error(err)
 			return
 		}
+		a.promptTokensSource = mergeTokenSource(a.promptTokensSource, botTokenSource)
 	}
 	summaryTokens := 0
 	var summaryMessage openai.ChatCompletionMessage
 	if summary != nil && strings.TrimSpace(summary.SummaryText) != "" {
 		summaryMessage = summaryPromptMessage(summary)
-		summaryTokens, err = tokenizer.GetTokens(&summaryMessage, a.openaiConf.Model)
+		var summaryTokenSource string
+		summaryTokens, summaryTokenSource, err = tokenizer.GetTokensWithSource(&summaryMessage, a.openaiConf.Model)
 		if err != nil {
 			a.log.Error(err)
 			return
 		}
+		a.promptTokensSource = mergeTokenSource(a.promptTokensSource, summaryTokenSource)
+	}
+	retrievalTokens := 0
+	var retrievalMessage openai.ChatCompletionMessage
+	if a != nil && a.routeDecision.UseRetrievalAsContext && len(a.retrievalHits) > 0 {
+		retrievalMessage = a.retrievalPromptMessage(a.retrievalHits, a.openaiConf.Model)
+		var retrievalTokenSource string
+		retrievalTokens, retrievalTokenSource, err = tokenizer.GetTokensWithSource(&retrievalMessage, a.openaiConf.Model)
+		if err != nil {
+			a.log.Error(err)
+			return
+		}
+		a.promptTokensSource = mergeTokenSource(a.promptTokensSource, retrievalTokenSource)
 	}
 	//获取系统消息后重新构建消息列表，历史 turn 在前，当前消息在最后
 	messages = make([]openai.ChatCompletionMessage, 0)
-	currTokens, err = tokenizer.GetTokens(&currMessage, a.openaiConf.Model)
+	var currTokenSource string
+	currTokens, currTokenSource, err = tokenizer.GetTokensWithSource(&currMessage, a.openaiConf.Model)
 	if err != nil {
 		a.log.Error(err)
 		return
 	}
+	a.promptTokensSource = mergeTokenSource(a.promptTokensSource, currTokenSource)
 	//如果当前消息tokens数超过限制，直接返回错误
-	if currTokens > a.openaiConf.MaxTokens-a.openaiConf.MinResponseTokens-botTokens-summaryTokens-ChatPrimedTokens {
+	maxPromptTokens := a.openaiConf.MaxTokens - a.openaiConf.MinResponseTokens - botTokens - summaryTokens - retrievalTokens - ChatPrimedTokens
+	if currTokens > maxPromptTokens {
 		err = zerror.NewByMsg("请求消息超限")
 		a.log.Error(err)
 		return
 	}
-	tokens = currTokens + botTokens + summaryTokens + ChatPrimedTokens
+	tokens = currTokens + botTokens + summaryTokens + retrievalTokens + ChatPrimedTokens
 	if summaryTokens > 0 {
 		messages = append(messages, summaryMessage)
+	}
+	if retrievalTokens > 0 {
+		messages = append(messages, retrievalMessage)
 	}
 	//按 turn 顺序回放最近 N 轮上下文
 	for _, turn := range turns {
@@ -431,13 +535,16 @@ func (a *app) saveContext(messageID string, assistantMessage openai.ChatCompleti
 	}
 	return nil
 }
-func (a *app) keywords(in *proto.ChatCompletionRequest) []string {
+func (a *app) keywords(ctx context.Context, in *proto.ChatCompletionRequest) []string {
+	if a != nil && a.keywordsFn != nil {
+		return a.keywordsFn(ctx, in)
+	}
 	pool := keywords_filter.GetKeywordsClientPool()
 	conn := pool.Get()
 	defer pool.Put(conn)
 	accessToken := config.GetConfig().DependOn.Keywords.AccessToken
 	client := keywords_proto.NewFilterClient(conn)
-	ctx := services.AppendBearerTokenToContext(context.Background(), accessToken)
+	ctx = services.AppendBearerTokenToContext(ctx, accessToken)
 	req := &keywords_proto.FilterReq{
 		Text: in.Message,
 	}
@@ -449,14 +556,14 @@ func (a *app) keywords(in *proto.ChatCompletionRequest) []string {
 	return res.Keywords
 
 }
-func (a *app) sensitive(in *proto.ChatCompletionRequest) (ok bool, msg string, err error) {
+func (a *app) sensitive(ctx context.Context, in *proto.ChatCompletionRequest) (ok bool, msg string, err error) {
 	pool := keywords_filter.GetSensitiveClientPool()
 	conn := pool.Get()
 	defer pool.Put(conn)
 	//鉴权
 	accessToken := config.GetConfig().DependOn.Sensitive.AccessToken
 	client := keywords_proto.NewFilterClient(conn)
-	ctx := services.AppendBearerTokenToContext(context.Background(), accessToken) //上下文
+	ctx = services.AppendBearerTokenToContext(ctx, accessToken) //上下文
 	req := &keywords_proto.FilterReq{
 		Text: in.Message,
 	}

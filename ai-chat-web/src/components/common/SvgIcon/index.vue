@@ -6,9 +6,11 @@ interface Props {
   icon?: string
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
 
 const attrs = useAttrs()
+
+const iconName = computed(() => props.icon ?? '')
 
 const bindAttrs = computed<{ class: string; style: string }>(() => ({
   class: (attrs.class as string) || '',
@@ -17,5 +19,5 @@ const bindAttrs = computed<{ class: string; style: string }>(() => ({
 </script>
 
 <template>
-  <Icon :icon="icon" v-bind="bindAttrs" />
+  <Icon :icon="iconName" v-bind="bindAttrs" />
 </template>

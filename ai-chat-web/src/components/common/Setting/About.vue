@@ -4,28 +4,22 @@ import { NSpin } from 'naive-ui'
 import { fetchChatConfig } from '@/api'
 import pkg from '@/../package.json'
 import { useAuthStore } from '@/store'
-
-interface ConfigState {
-  timeoutMs?: number
-  reverseProxy?: string
-  apiModel?: string
-  socksProxy?: string
-  httpsProxy?: string
-  balance?: string
-}
+import { formatModelOptionLabel, formatProviderLabel } from '@/utils/modelCatalog'
 
 const authStore = useAuthStore()
 
 const loading = ref(false)
 
-const config = ref<ConfigState>()
+const config = ref<Chat.ChatConfigResponse>()
 
 const isChatGPTAPI = computed<boolean>(() => !!authStore.isChatGPTAPI)
+
+const providerCount = computed(() => config.value?.providers?.length ?? 0)
 
 async function fetchConfig() {
   try {
     loading.value = true
-    const { data } = await fetchChatConfig<ConfigState>()
+    const { data } = await fetchChatConfig<Chat.ChatConfigResponse>()
     config.value = data
   }
   finally {
@@ -61,6 +55,9 @@ onMounted(() => {
         </p>
       </div>
       <p>{{ $t("setting.api") }}：{{ config?.apiModel ?? '-' }}</p>
+      <p>当前 Provider：{{ config?.selectedProvider ?? '-' }}</p>
+      <p>当前 Model：{{ config?.selectedModel ?? '-' }}</p>
+      <p>可用 Provider 数：{{ providerCount }}</p>
       <p v-if="isChatGPTAPI">
         {{ $t("setting.balance") }}：{{ config?.balance ?? '-' }}
       </p>
@@ -70,6 +67,29 @@ onMounted(() => {
       <p>{{ $t("setting.timeout") }}：{{ config?.timeoutMs ?? '-' }}</p>
       <p>{{ $t("setting.socks") }}：{{ config?.socksProxy ?? '-' }}</p>
       <p>{{ $t("setting.httpsProxy") }}：{{ config?.httpsProxy ?? '-' }}</p>
+      <div v-if="config?.providers?.length" class="space-y-2">
+        <div
+          v-for="provider in config.providers"
+          :key="provider.provider"
+          class="p-3 rounded-md bg-white/60 dark:bg-black/20"
+        >
+          <p class="flex flex-wrap items-center gap-2 font-semibold">
+            <span>{{ formatProviderLabel(provider) }}</span>
+            <span class="text-xs text-neutral-500 dark:text-neutral-400">
+              {{ provider.provider }}
+            </span>
+          </p>
+          <p class="text-sm text-neutral-500 dark:text-neutral-400">
+            状态：{{ provider.enabled ? '启用' : '停用' }}{{ provider.isDefault ? ' · 默认' : '' }}
+          </p>
+          <p class="text-sm text-neutral-500 dark:text-neutral-400">
+            Default：{{ provider.defaultModel || '-' }}
+          </p>
+          <p class="text-sm text-neutral-500 dark:text-neutral-400">
+            Models：{{ provider.models?.length ? provider.models.map(model => formatModelOptionLabel(model)).join(', ') : '-' }}
+          </p>
+        </div>
+      </div>
     </div>
   </NSpin>
 </template>

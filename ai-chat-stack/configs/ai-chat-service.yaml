@@ -7,12 +7,12 @@ log:
   level: "info"
   logPath: "runtime/logs/app.log"
 chat:
-  # openai key
-  api_key: "i0jey84SdkFdw5u43780yjr3h7se8nth0yi295nr94ksDngKprEh"
-  # openai 接口地址
-  base_url: "http://localhost:8084/v1"
+  # deepseek key
+  api_key: "sk-626e29fcd5ad41a4a65e92ea54bf8faa"
+  # deepseek 接口地址
+  base_url: "https://api.deepseek.com/v1"
   # 使用的训练模型
-  model: "gpt-3.5-turbo"
+  model: "deepseek-chat"
   # 单次请求的上下文总长度,包括：请求消息+响应消息
   max_tokens: 4096
   # 表示语言模型输出的随机性和创造性
@@ -29,7 +29,7 @@ chat:
   # 取值范围 0~1，值越大表示回复时会更注重避免使用已经出现的单词
   frequency_penalty: 0.5
   # AI助手特征描述
-  bot_desc: "你是一个AI助手，我需要你模拟一名资深的软件工程师来回答我的问题"
+  bot_desc: "你是一个AI助手。回答时保持简洁、准确、中文优先。不要主动声称自己是 ChatGPT、OpenAI 或其他特定厂商的官方模型；如果用户询问你的身份，请说明你是当前应用中的 AI 助手。"
   # 单次请求，保留的响应tokens数量
   min_response_tokens: 2048
   # 上下文缓存时长，单位s
@@ -70,3 +70,57 @@ vectorDB:
   readConsistency: "eventualConsistency"
   # 空闲连接超时时长s
   idleConnTimeout: 60
+providers:
+  - name: "deepseek"
+    display_name: "DeepSeek"
+    kind: "openai-compatible"
+    base_url: "https://api.deepseek.com/v1"
+    api_key: "sk-626e29fcd5ad41a4a65e92ea54bf8faa"
+    default_model: "deepseek-chat"
+    chat_model: "deepseek-chat"
+    models:
+      - "deepseek-chat"
+      - "deepseek-reasoner"
+    supports_stream: true
+    supports_non_stream: true
+    supports_embeddings: false
+    context_window: 128000
+    default_reserved_completion_tokens: 2048
+    enabled: true
+    priority: 100
+    timeout_ms: 60000
+  - name: "openai"
+    display_name: "ChatGPT"
+    kind: "openai-compatible"
+    base_url: "https://api.openai.com/v1"
+    api_key: "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"
+    default_model: "gpt-4o-mini"
+    chat_model: "gpt-4o-mini"
+    models:
+      - "gpt-4o-mini"
+    supports_stream: true
+    supports_non_stream: true
+    supports_embeddings: false
+    context_window: 128000
+    default_reserved_completion_tokens: 2048
+    enabled: true
+    priority: 95
+    timeout_ms: 60000
+  - name: "qwen"
+    display_name: "Qwen"
+    kind: "openai-compatible"
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    api_key: "sk-a7752a068f39431ca16530893518ea05"
+    default_model: "qwen-flash"
+    chat_model: "qwen-flash"
+    models:
+      - "qwen-flash"
+      - "qwen-plus"
+    supports_stream: true
+    supports_non_stream: true
+    supports_embeddings: false
+    context_window: 128000
+    default_reserved_completion_tokens: 2048
+    enabled: true
+    priority: 90
+    timeout_ms: 60000

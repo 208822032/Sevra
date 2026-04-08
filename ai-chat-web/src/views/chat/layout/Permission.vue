@@ -56,10 +56,10 @@ async function sendCode() {
 async function handleLogin() {
   try {
     loading.value = true
-    const data = await login(phone.value.trim(), code.value.trim())
+    const response = await login<{ access_token: string }>(phone.value.trim(), code.value.trim())
     // authStore.setToken(data.token)
     // console.log('datasss: ', data)
-    localStorage.access_token = data.access_token
+    localStorage.access_token = response.data.access_token
     ms.success('登录成功')
     window.location.reload()
   }

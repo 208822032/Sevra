@@ -1,29 +1,40 @@
 import type { AxiosProgressEvent, GenericAbortSignal } from 'axios'
-import { post } from '@/utils/request'
+import { get, post } from '@/utils/request'
 import { useSettingStore } from '@/store'
+import { normalizeChatConfigResponse } from '@/utils/modelCatalog'
 
 export function fetchChatAPI<T = any>(
   prompt: string,
-  options?: { conversationId?: string; parentMessageId?: string },
+  options?: { conversationId?: string; parentMessageId?: string; provider?: string; model?: string },
   signal?: GenericAbortSignal,
 ) {
   return post<T>({
     url: '/chat',
-    data: { prompt, options },
+    data: {
+      prompt,
+      options,
+      provider: options?.provider,
+      model: options?.model,
+    },
     signal,
   })
 }
 
 export function fetchChatConfig<T = any>() {
-  return post<T>({
+  return get<T>({
     url: '/config',
-  })
+  }).then(response => ({
+    ...response,
+    data: normalizeChatConfigResponse(response.data) as T,
+  }))
 }
 
 export function fetchChatAPIProcess<T = any>(
   params: {
     prompt: string
     options?: { conversationId?: string; parentMessageId?: string }
+    provider?: string
+    model?: string
     signal?: GenericAbortSignal
     onDownloadProgress?: (progressEvent: AxiosProgressEvent) => void },
 ) {
@@ -31,7 +42,13 @@ export function fetchChatAPIProcess<T = any>(
 
   return post<T>({
     url: '/chat-process',
-    data: { prompt: params.prompt, options: params.options, systemMessage: settingStore.systemMessage },
+    data: {
+      prompt: params.prompt,
+      options: params.options,
+      provider: params.provider,
+      model: params.model,
+      systemMessage: settingStore.systemMessage,
+    },
     signal: params.signal,
     onDownloadProgress: params.onDownloadProgress,
   })

@@ -28,6 +28,22 @@ export const useChatStore = defineStore('chat-store', {
       this.recordState()
     },
 
+    setModelSelection(provider: string, model: string) {
+      this.activeProvider = provider
+      this.activeModel = model
+      this.recordState()
+    },
+
+    setActiveProvider(provider: string) {
+      this.activeProvider = provider
+      this.recordState()
+    },
+
+    setActiveModel(model: string) {
+      this.activeModel = model
+      this.recordState()
+    },
+
     addHistory(history: Chat.History, chatData: Chat.Chat[] = []) {
       this.history.unshift(history)
       this.chat.unshift({ uuid: history.uuid, data: chatData })

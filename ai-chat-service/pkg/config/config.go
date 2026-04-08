@@ -2,6 +2,9 @@ package config
 
 import (
 	"log"
+	"strings"
+
+	"ai-chat-service/chat-server/provider"
 
 	"github.com/spf13/viper"
 )
@@ -29,8 +32,10 @@ type Config struct {
 		MinResponseTokens int     `mapstructure:"min_response_tokens"`
 		ContextTTL        int     `mapstructure:"context_ttl"`
 		ContextLen        int     `mapstructure:"context_len"`
+		RouteMode         string  `mapstructure:"route_mode"`
 	}
-	Context struct {
+	Providers []provider.ProviderProfile `mapstructure:"providers"`
+	Context   struct {
 		Backend         string `mapstructure:"context_backend"`
 		FallbackToRedis bool   `mapstructure:"context_fallback_to_redis"`
 		Namespace       string `mapstructure:"context_namespace"`
@@ -105,4 +110,47 @@ func InitConfig(filePath string, typ ...string) {
 
 func GetConfig() *Config {
 	return conf
+}
+
+func (c *Config) ProviderProfiles() []provider.ProviderProfile {
+	if c == nil {
+		return nil
+	}
+	if len(c.Providers) > 0 {
+		profiles := make([]provider.ProviderProfile, 0, len(c.Providers))
+		for _, profile := range c.Providers {
+			profiles = append(profiles, profile.Normalize())
+		}
+		return profiles
+	}
+	name := providerNameFromModel(c.Chat.Model)
+	defaultProfile := provider.ProviderProfile{
+		Name:                            name,
+		DisplayName:                     name,
+		Kind:                            "openai-compatible",
+		BaseURL:                         c.Chat.BaseUrl,
+		APIKey:                          c.Chat.ApiKey,
+		DefaultModel:                    c.Chat.Model,
+		ChatModel:                       c.Chat.Model,
+		Models:                          []string{c.Chat.Model},
+		SupportsStream:                  true,
+		SupportsNonStream:               true,
+		SupportsEmbeddings:              false,
+		ContextWindow:                   c.Chat.MaxTokens,
+		DefaultReservedCompletionTokens: c.Chat.MinResponseTokens,
+		Enabled:                         true,
+		Priority:                        100,
+		TimeoutMS:                       60000,
+	}
+	return []provider.ProviderProfile{defaultProfile.Normalize()}
+}
+
+func providerNameFromModel(model string) string {
+	if strings.Contains(strings.ToLower(model), "qwen") {
+		return "qwen"
+	}
+	if strings.Contains(strings.ToLower(model), "deepseek") {
+		return "deepseek"
+	}
+	return "openai"
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 
 	"github.com/sashabaranov/go-openai"
@@ -19,12 +20,24 @@ func GetTokenCount(message openai.ChatCompletionMessage, model string) (int, err
 	url := fmt.Sprintf("http://192.168.239.161:3002/tokenizer/%s", model)
 	info := tokenInfo{}
 	if err := postJSON(url, &message, &info); err != nil {
-		return 0, err
+		return estimateTokenCount(message), nil
 	}
 	if info.Code != 200 {
-		return 0, fmt.Errorf("%v", info.Msg)
+		return estimateTokenCount(message), nil
 	}
 	return info.Count, nil
+}
+
+func estimateTokenCount(message openai.ChatCompletionMessage) int {
+	contentLength := len([]rune(message.Content))
+	if contentLength == 0 {
+		return 8
+	}
+	estimated := int(math.Ceil(float64(contentLength)/4.0)) + 8
+	if estimated < 8 {
+		return 8
+	}
+	return estimated
 }
 
 func postJSON(url string, requestData *openai.ChatCompletionMessage, responseData *tokenInfo) error {

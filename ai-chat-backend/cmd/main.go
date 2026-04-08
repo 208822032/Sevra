@@ -43,18 +43,12 @@ func (r *ChatGPTWebServer) httpServer(ctx context.Context) {
 	entry := gin.Default()
 	//挂载中间件和路由
 	entry.Use(middlewares.Cors())
-	//注册路由 /api/chat-process /api/config /api/session /api/health
+	//注册路由 /api/chat-process /api/config /api/models /api/session /api/health
 	chat := entry.Group("/api")
 	chat.POST("/chat-process", chatService.ChatProcess)
-	chat.POST("/config", func(ctx *gin.Context) {
-		ctx.JSON(200, gin.H{
-			"status": "Success",
-			"data": map[string]string{
-				"apiModel":   "ChatGPTAPI",
-				"socksProxy": "",
-			},
-		})
-	})
+	chat.GET("/config", chatService.Config)
+	chat.POST("/config", chatService.Config)
+	chat.GET("/models", chatService.Config)
 	chat.POST("/session", func(ctx *gin.Context) {
 		ctx.JSON(200, gin.H{
 			"status":  "Success",

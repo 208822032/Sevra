@@ -40,11 +40,14 @@ const wrapClass = computed(() => {
   return [
     'text-wrap',
     'min-w-[20px]',
-    'rounded-md',
-    isMobile.value ? 'p-2' : 'px-3 py-2',
-    props.inversion ? 'bg-[#d2f9d1]' : 'bg-[#f4f6f8]',
-    props.inversion ? 'dark:bg-[#a1dc95]' : 'dark:bg-[#1e1e20]',
-    props.inversion ? 'message-request' : 'message-reply',
+    'rounded-[22px]',
+    'border',
+    'shadow-[0_10px_30px_rgba(15,23,42,0.05)]',
+    'backdrop-blur',
+    isMobile.value ? 'px-3 py-2.5' : 'px-4 py-3',
+    props.inversion
+      ? 'message-request border-emerald-200/70 bg-emerald-50/90 text-slate-900 dark:border-emerald-400/20 dark:bg-emerald-500/10 dark:text-slate-100'
+      : 'message-reply border-slate-200/80 bg-white/90 text-slate-900 dark:border-white/10 dark:bg-white/5 dark:text-slate-100',
     { 'text-red-500': props.error },
   ]
 })
@@ -64,16 +67,15 @@ defineExpose({ textRef })
 </script>
 
 <template>
-  <div class="text-black" :class="wrapClass">
+  <div :class="wrapClass">
     <template v-if="loading">
-      <span class="dark:text-white w-[4px] h-[20px] block animate-blink" />
+      <span class="dark:text-white block h-[20px] w-[4px] animate-blink" />
     </template>
     <template v-else>
-      <div ref="textRef" class="leading-relaxed break-words">
+      <div ref="textRef" class="break-words leading-7">
         <div v-if="!inversion">
           <div v-if="!asRawText" class="markdown-body" v-html="text" />
           <div v-else class="whitespace-pre-wrap" v-text="text" />
-          <p style="color:#6e7781;font-size:12px;">由零声教学AI助手生成</p>
         </div>
         <div v-else class="whitespace-pre-wrap" v-text="text" />
       </div>
