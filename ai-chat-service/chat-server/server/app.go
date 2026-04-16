@@ -6,6 +6,7 @@ import (
 	"ai-chat-service/chat-server/llm"
 	metrics_bus "ai-chat-service/chat-server/metrics-bus"
 	"ai-chat-service/chat-server/provider"
+	"ai-chat-service/chat-server/qa"
 	vector_data "ai-chat-service/chat-server/vector-data"
 	"ai-chat-service/pkg/config"
 	"ai-chat-service/pkg/log"
@@ -51,6 +52,8 @@ type app struct {
 	providerRegistry   *provider.Registry
 	provider           provider.Provider
 	providerProfile    provider.ProviderProfile
+	qaRetriever        qa.Retriever
+	qaStore            qa.Store
 	selectedProvider   string
 	selectedModel      string
 	fallbackUsed       bool
@@ -59,6 +62,7 @@ type app struct {
 	retrievalHits      []llm.RetrievalHit
 	promptTokensSource string
 	keywordsFn         func(context.Context, *proto.ChatCompletionRequest) []string
+	sensitiveFn        func(context.Context, *proto.ChatCompletionRequest) (bool, string, error)
 	fastPathCache      *sessionFastPathCache
 	busMetrics         *metrics_bus.BusMetrics
 	sessionID          string
@@ -166,10 +170,14 @@ func (s *chatService) newApp(in *proto.ChatCompletionRequest, contextStore chat_
 		providerRegistry: registry,
 		provider:         actualProvider,
 		providerProfile:  actualProfile,
+		qaRetriever:      s.qaRetriever,
+		qaStore:          s.qaStore,
 		selectedProvider: selectedProvider,
 		selectedModel:    selectedModel,
 		fallbackUsed:     selection.FallbackUsed,
 		fallbackReason:   selection.FallbackReason,
+		keywordsFn:       s.keywordsFn,
+		sensitiveFn:      s.sensitiveFn,
 		fastPathCache:    s.ensureFastPathCache(),
 		busMetrics:       s.busMetrics,
 	}

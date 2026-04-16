@@ -6,6 +6,7 @@ import (
 	"ai-chat-service/chat-server/llm"
 	metrics_bus "ai-chat-service/chat-server/metrics-bus"
 	"ai-chat-service/chat-server/provider"
+	"ai-chat-service/chat-server/qa"
 	vector_data "ai-chat-service/chat-server/vector-data"
 	"ai-chat-service/pkg/config"
 	"ai-chat-service/pkg/log"
@@ -29,19 +30,33 @@ type chatService struct {
 	config           *config.Config
 	log              log.ILogger
 	contextStore     chat_context.SessionStore
+	qaRetriever      qa.Retriever
+	qaStore          qa.Store
 	data             data.IChatRecordsData        //聊天记录数据库
 	vectorData       vector_data.IChatRecordsData //向量数据库
 	providerRegistry *provider.Registry
 	busMetrics       *metrics_bus.BusMetrics
+	keywordsFn       func(context.Context, *proto.ChatCompletionRequest) []string
+	sensitiveFn      func(context.Context, *proto.ChatCompletionRequest) (bool, string, error)
 	fastPathOnce     sync.Once
 	fastPathCache    *sessionFastPathCache
 }
 
-func NewChatService(data data.IChatRecordsData, vectorData vector_data.IChatRecordsData, config *config.Config, log log.ILogger, busMetrics *metrics_bus.BusMetrics, contextStore chat_context.SessionStore) proto.ChatServer {
+func NewChatService(data data.IChatRecordsData, vectorData vector_data.IChatRecordsData, config *config.Config, log log.ILogger, busMetrics *metrics_bus.BusMetrics, contextStore chat_context.SessionStore, qaRetriever ...qa.Retriever) proto.ChatServer {
+	retriever := qa.NewNoopRetriever()
+	if len(qaRetriever) > 0 && qaRetriever[0] != nil {
+		retriever = qaRetriever[0]
+	}
+	var qaStore qa.Store
+	if store, ok := retriever.(qa.Store); ok {
+		qaStore = store
+	}
 	svc := &chatService{
 		config:           config,
 		log:              log,
 		contextStore:     contextStore,
+		qaRetriever:      retriever,
+		qaStore:          qaStore,
 		data:             data,
 		vectorData:       vectorData,
 		busMetrics:       busMetrics,
@@ -69,7 +84,7 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 		s.log.Error(err)
 	}
 	//敏感词过滤
-	ok, msg, err := app.sensitive(ctx, in)
+	ok, msg, err := app.checkSensitive(ctx, in)
 	if err != nil {
 		s.log.Error(err)
 		return nil, err
@@ -77,6 +92,17 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 	if !ok {
 		res := app.buildChatCompletionResponse(msg)
 		return res, nil
+	}
+	if hit, preflightResult, preflightErr := app.tryQAPreflight(ctx, in); preflightErr != nil {
+		s.log.Error(preflightErr)
+	} else if hit {
+		res, meta, buildErr := app.buildQAPreflightUnaryResponse(ctx, in, preflightResult)
+		if buildErr != nil {
+			s.log.Error(buildErr)
+		} else {
+			app.setResponseMetaTrailer(ctx, meta)
+			return res, nil
+		}
 	}
 
 	//关键词提取
@@ -155,6 +181,7 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 			TotalTokens:      int32(result.Usage.TotalTokens),
 		},
 	}
+	app.queueQABackfill(ctx, in, result.Message.Content, result.Provider, result.Model)
 	//启用协程保存上下文和聊天记录，避免阻塞主流程
 	go func() {
 		err := app.saveContext(result.ID, result.Message, result.Usage.CompletionTokens)
@@ -211,14 +238,18 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 		s.log.Error(err)
 	}
 	//敏感词过滤
-	ok, msg, err := app.sensitive(stream.Context(), in)
+	ok, msg, err := app.checkSensitive(stream.Context(), in)
 	if err != nil {
-		s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		if s.busMetrics != nil {
+			s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		}
 		s.log.Error(err)
 		return err
 	}
 	if !ok {
-		s.busMetrics.SensitiveQuestionsTotalCounter.Inc()
+		if s.busMetrics != nil {
+			s.busMetrics.SensitiveQuestionsTotalCounter.Inc()
+		}
 		resId := uuid.New().String()
 		startRes := app.buildChatCompletionStreamResponse(resId, "", "")
 		endRes := app.buildChatCompletionStreamResponse(resId, "", "stop")
@@ -242,6 +273,23 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 		}
 		return nil
 	}
+	if hit, preflightResult, preflightErr := app.tryQAPreflight(stream.Context(), in); preflightErr != nil {
+		s.log.Error(preflightErr)
+	} else if hit {
+		chunks, meta, buildErr := app.buildQAPreflightStreamResponses(stream.Context(), in, preflightResult)
+		if buildErr != nil {
+			s.log.Error(buildErr)
+		} else {
+			app.setResponseMetaTrailer(stream.Context(), meta)
+			for _, chunk := range chunks {
+				if err := stream.Send(chunk); err != nil {
+					s.log.Error(err)
+					return err
+				}
+			}
+			return nil
+		}
+	}
 
 	decision, err := app.resolveRouteDecision(stream.Context(), in)
 	if err != nil {
@@ -252,7 +300,9 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 	app.retrievalHits = decision.RetrievalHits
 	req, tokens, currTokens, _, err := app.buildChatCompletionRequest(stream.Context(), in, false)
 	if err != nil {
-		s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		if s.busMetrics != nil {
+			s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		}
 		s.log.Error(err)
 		return err
 	}
@@ -315,7 +365,9 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 	}
 	chatStream, err := app.provider.ChatStream(stream.Context(), providerReq)
 	if err != nil {
-		s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		if s.busMetrics != nil {
+			s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		}
 		s.log.Error(err)
 		return err
 	}
@@ -361,7 +413,9 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 	}
 	resultTokens, resultTokenSource, err := tokenizer.GetTokensWithSource(&resultMessage, app.openaiConf.Model)
 	if err != nil {
-		s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		if s.busMetrics != nil {
+			s.busMetrics.ErrQuestionsTotalCounter.Inc()
+		}
 		s.log.Error(err)
 		return err
 	}
@@ -377,6 +431,7 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 	}
 	meta := app.buildResponseMeta(trace, usage, tokens)
 	app.setResponseMetaTrailer(stream.Context(), meta)
+	app.queueQABackfill(stream.Context(), in, completionContent, app.providerProfile.Name, app.openaiConf.Model)
 
 	go func() {
 		err := app.saveContext(resultID, resultMessage, resultTokens)
@@ -386,7 +441,9 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 		}
 	}()
 	go func() {
-		s.busMetrics.QuestionsTotalCounter.Inc()
+		if s.busMetrics != nil {
+			s.busMetrics.QuestionsTotalCounter.Inc()
+		}
 		records := &data.ChatRecord{
 			UserMsg:         in.Message,
 			UserMsgTokens:   currTokens,

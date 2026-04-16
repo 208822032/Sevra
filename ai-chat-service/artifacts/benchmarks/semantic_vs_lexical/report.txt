@@ -1,0 +1,12 @@
+=== RUN   TestKVLiteStoreSemanticVsLexicalEvaluationReport
+    kvlite_semantic_eval_test.go:162: [semantic-eval] case=exact query="How do I reset the cache safely?" expected="reset-cache" lexical=hit=exact,answer="reset-cache" semantic=hit=semantic,answer="reset-cache",score=1.0000 combined=hit=exact,answer="reset-cache" verdict=both
+        [semantic-eval] case=normalized query="  HOW DO I RESET THE CACHE SAFELY!!!  " expected="reset-cache" lexical=hit=normalized,answer="reset-cache" semantic=hit=semantic,answer="reset-cache",score=1.0000 combined=hit=normalized,answer="reset-cache" verdict=both
+        [semantic-eval] case=candidate query="How can I safely clear Redis cache?" expected="clear-cache" lexical=hit=candidate,answer="clear-cache",score=0.7647 semantic=miss combined=hit=candidate,answer="clear-cache",score=0.7647 verdict=lexical-only
+        [semantic-eval] case=trace query="How do I inspect semantic trace fields?" expected="trace-fields" lexical=hit=exact,answer="trace-fields" semantic=hit=semantic,answer="trace-fields",score=1.0000 combined=hit=exact,answer="trace-fields" verdict=both
+        [semantic-eval] case=backfill query="How do I enable async backfill?" expected="backfill-on" lexical=hit=exact,answer="backfill-on" semantic=hit=semantic,answer="backfill-on",score=1.0000 combined=hit=exact,answer="backfill-on" verdict=both
+        [semantic-eval] case=probe query="What is the safest way to refresh stale cache entries?" expected="reset-cache" lexical=miss semantic=miss combined=miss verdict=miss
+        [semantic-eval] summary cases=6 lexical_correct=5 semantic_correct=4 combined_correct=5 semantic_only_wins=0 lexical_only_wins=1 semantic_avg_score=1.0000
+        
+--- PASS: TestKVLiteStoreSemanticVsLexicalEvaluationReport (0.01s)
+PASS
+ok  	ai-chat-service/chat-server/qa	0.015s

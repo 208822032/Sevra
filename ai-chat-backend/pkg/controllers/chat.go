@@ -78,6 +78,15 @@ type AnswerTrace struct {
 	FallbackReason     string         `json:"fallback_reason,omitempty"`
 	UsedLocalRetrieval bool           `json:"used_local_retrieval"`
 	CacheHit           bool           `json:"cache_hit"`
+	QAHitType          string         `json:"qa_hit_type,omitempty"`
+	CandidateCount     int            `json:"candidate_count,omitempty"`
+	CandidateTopScore  float64        `json:"candidate_top_score,omitempty"`
+	CandidateSource    string         `json:"candidate_source,omitempty"`
+	SemanticCandidateCount int        `json:"semantic_candidate_count,omitempty"`
+	SemanticTopK           int        `json:"semantic_top_k,omitempty"`
+	SemanticTopScore       float64    `json:"semantic_top_score,omitempty"`
+	SemanticModel          string     `json:"semantic_model,omitempty"`
+	SemanticSource         string     `json:"semantic_source,omitempty"`
 	FinalAnswerSource  string         `json:"final_answer_source"`
 	GenerationProvider string         `json:"generation_provider,omitempty"`
 	GenerationModel    string         `json:"generation_model,omitempty"`
@@ -227,58 +236,7 @@ func (chat *ChatService) ChatProcess(ctx *gin.Context) {
 		if errors.Is(err, io.EOF) {
 			trailers := stream.Trailer()
 			if meta := parseResponseMeta(trailers); meta != nil {
-				if result.Trace == nil {
-					result.Trace = &AnswerTrace{}
-				}
-				if meta.Trace.AnswerMode != "" {
-					result.Trace.AnswerMode = meta.Trace.AnswerMode
-				}
-				if meta.Trace.Provider != "" {
-					result.Trace.Provider = meta.Trace.Provider
-				}
-				if meta.Trace.Model != "" {
-					result.Trace.Model = meta.Trace.Model
-				}
-				if meta.Trace.SelectedProvider != "" {
-					result.Trace.SelectedProvider = meta.Trace.SelectedProvider
-				}
-				if meta.Trace.SelectedModel != "" {
-					result.Trace.SelectedModel = meta.Trace.SelectedModel
-				}
-				if meta.Trace.ActualProvider != "" {
-					result.Trace.ActualProvider = meta.Trace.ActualProvider
-				}
-				if meta.Trace.ActualModel != "" {
-					result.Trace.ActualModel = meta.Trace.ActualModel
-				}
-				result.Trace.FallbackUsed = result.Trace.FallbackUsed || meta.Trace.FallbackUsed
-				if meta.Trace.FallbackReason != "" {
-					result.Trace.FallbackReason = meta.Trace.FallbackReason
-				}
-				result.Trace.UsedLocalRetrieval = meta.Trace.UsedLocalRetrieval
-				result.Trace.CacheHit = meta.Trace.CacheHit
-				if meta.Trace.FinalAnswerSource != "" {
-					result.Trace.FinalAnswerSource = meta.Trace.FinalAnswerSource
-				}
-				if meta.Trace.GenerationProvider != "" {
-					result.Trace.GenerationProvider = meta.Trace.GenerationProvider
-				}
-				if meta.Trace.GenerationModel != "" {
-					result.Trace.GenerationModel = meta.Trace.GenerationModel
-				}
-				if len(meta.Trace.RetrievedHits) > 0 {
-					result.Trace.RetrievedHits = meta.Trace.RetrievedHits
-				}
-				if meta.Usage.TotalTokens > 0 || meta.Budget.MaxContextTokens > 0 {
-					result.Usage = &meta.Usage
-					result.Budget = &meta.Budget
-				}
-				if result.Usage == nil {
-					result.Usage = &UsageInfo{}
-				}
-				if result.Budget == nil {
-					result.Budget = &BudgetInfo{}
-				}
+				mergeResponseMeta(&result, meta)
 				if !firstChunk {
 					ctx.Writer.Write([]byte("\n"))
 				}
@@ -420,4 +378,79 @@ func parseResponseMeta(md metadata.MD) *ResponseMeta {
 		meta.Budget.BudgetSource = "estimated"
 	}
 	return meta
+}
+
+func mergeResponseMeta(result *ChatMessage, meta *ResponseMeta) {
+	if result == nil || meta == nil {
+		return
+	}
+	if result.Trace == nil {
+		result.Trace = &AnswerTrace{}
+	}
+	if meta.Trace.AnswerMode != "" {
+		result.Trace.AnswerMode = meta.Trace.AnswerMode
+	}
+	if meta.Trace.Provider != "" {
+		result.Trace.Provider = meta.Trace.Provider
+	}
+	if meta.Trace.Model != "" {
+		result.Trace.Model = meta.Trace.Model
+	}
+	if meta.Trace.SelectedProvider != "" {
+		result.Trace.SelectedProvider = meta.Trace.SelectedProvider
+	}
+	if meta.Trace.SelectedModel != "" {
+		result.Trace.SelectedModel = meta.Trace.SelectedModel
+	}
+	if meta.Trace.ActualProvider != "" {
+		result.Trace.ActualProvider = meta.Trace.ActualProvider
+	}
+	if meta.Trace.ActualModel != "" {
+		result.Trace.ActualModel = meta.Trace.ActualModel
+	}
+	result.Trace.FallbackUsed = result.Trace.FallbackUsed || meta.Trace.FallbackUsed
+	if meta.Trace.FallbackReason != "" {
+		result.Trace.FallbackReason = meta.Trace.FallbackReason
+	}
+	result.Trace.UsedLocalRetrieval = meta.Trace.UsedLocalRetrieval
+	result.Trace.CacheHit = meta.Trace.CacheHit
+	if meta.Trace.QAHitType != "" {
+		result.Trace.QAHitType = meta.Trace.QAHitType
+	}
+	result.Trace.CandidateCount = meta.Trace.CandidateCount
+	result.Trace.CandidateTopScore = meta.Trace.CandidateTopScore
+	if meta.Trace.CandidateSource != "" {
+		result.Trace.CandidateSource = meta.Trace.CandidateSource
+	}
+	result.Trace.SemanticCandidateCount = meta.Trace.SemanticCandidateCount
+	result.Trace.SemanticTopK = meta.Trace.SemanticTopK
+	result.Trace.SemanticTopScore = meta.Trace.SemanticTopScore
+	if meta.Trace.SemanticModel != "" {
+		result.Trace.SemanticModel = meta.Trace.SemanticModel
+	}
+	if meta.Trace.SemanticSource != "" {
+		result.Trace.SemanticSource = meta.Trace.SemanticSource
+	}
+	if meta.Trace.FinalAnswerSource != "" {
+		result.Trace.FinalAnswerSource = meta.Trace.FinalAnswerSource
+	}
+	if meta.Trace.GenerationProvider != "" {
+		result.Trace.GenerationProvider = meta.Trace.GenerationProvider
+	}
+	if meta.Trace.GenerationModel != "" {
+		result.Trace.GenerationModel = meta.Trace.GenerationModel
+	}
+	if len(meta.Trace.RetrievedHits) > 0 {
+		result.Trace.RetrievedHits = meta.Trace.RetrievedHits
+	}
+	if meta.Usage.TotalTokens > 0 || meta.Budget.MaxContextTokens > 0 {
+		result.Usage = &meta.Usage
+		result.Budget = &meta.Budget
+	}
+	if result.Usage == nil {
+		result.Usage = &UsageInfo{}
+	}
+	if result.Budget == nil {
+		result.Budget = &BudgetInfo{}
+	}
 }

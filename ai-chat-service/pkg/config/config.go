@@ -35,7 +35,18 @@ type Config struct {
 		RouteMode         string  `mapstructure:"route_mode"`
 	}
 	Providers []provider.ProviderProfile `mapstructure:"providers"`
-	Context   struct {
+	Retrieval struct {
+		Semantic struct {
+			Enabled        bool    `mapstructure:"enabled"`
+			TopK           int     `mapstructure:"top_k"`
+			Threshold      float64 `mapstructure:"threshold"`
+			CorpusLimit    int     `mapstructure:"corpus_limit"`
+			EmbeddingModel string  `mapstructure:"embedding_model"`
+			EmbeddingDim   int     `mapstructure:"embedding_dim"`
+			AsyncBackfill  bool    `mapstructure:"async_backfill"`
+		} `mapstructure:"semantic"`
+	} `mapstructure:"retrieval"`
+	Context struct {
 		Backend         string `mapstructure:"context_backend"`
 		FallbackToRedis bool   `mapstructure:"context_fallback_to_redis"`
 		Namespace       string `mapstructure:"context_namespace"`
@@ -92,6 +103,7 @@ var conf *Config
 
 func InitConfig(filePath string, typ ...string) {
 	v := viper.New()
+	v.SetDefault("retrieval.semantic.async_backfill", true)
 	v.SetConfigFile(filePath)
 	if len(typ) > 0 {
 		v.SetConfigType(typ[0])

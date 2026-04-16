@@ -115,6 +115,43 @@ func (p *OpenAICompatibleProvider) ChatStream(ctx context.Context, req llm.ChatR
 	return &openAIChatStream{stream: stream, cancel: cancel}, nil
 }
 
+func (p *OpenAICompatibleProvider) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if p == nil || p.client == nil {
+		return nil, &llm.ProviderError{Class: llm.ErrorClassUnavailable, Source: p.Name(), Message: "provider client is not initialized"}
+	}
+	if !p.profile.SupportsEmbeddings {
+		return nil, &llm.ProviderError{Class: llm.ErrorClassUnavailable, Source: p.Name(), Message: "provider does not support embeddings"}
+	}
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	embeddingModelName := strings.TrimSpace(p.profile.EmbeddingModel)
+	if embeddingModelName == "" {
+		embeddingModelName = strings.TrimSpace(p.profile.DefaultEmbeddingModel)
+	}
+	if embeddingModelName == "" {
+		embeddingModelName = openai.AdaEmbeddingV2.String()
+	}
+	var embeddingModel openai.EmbeddingModel
+	if err := embeddingModel.UnmarshalText([]byte(embeddingModelName)); err != nil || embeddingModel == openai.Unknown {
+		return nil, &llm.ProviderError{Class: llm.ErrorClassInvalid, Source: p.Name(), Model: embeddingModelName, Message: fmt.Sprintf("unsupported embedding model %q", embeddingModelName), Err: err}
+	}
+	providerCtx, cancel := p.withTimeout(ctx, p.profile.Timeout())
+	defer cancel()
+	resp, err := p.client.CreateEmbeddings(providerCtx, openai.EmbeddingRequest{
+		Input: texts,
+		Model: embeddingModel,
+	})
+	if err != nil {
+		return nil, p.wrapError(err, embeddingModelName)
+	}
+	vectors := make([][]float32, 0, len(resp.Data))
+	for _, item := range resp.Data {
+		vectors = append(vectors, append([]float32(nil), item.Embedding...))
+	}
+	return vectors, nil
+}
+
 func (p *OpenAICompatibleProvider) withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout <= 0 {
 		timeout = p.profile.Timeout()

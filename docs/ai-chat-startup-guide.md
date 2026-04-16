@@ -224,6 +224,31 @@ go run . --config=dev.config.yaml
 - `context.context_fallback_to_redis=true|false`
 - `context.kvlite.addr`
 
+`ai-chat-service` 还支持一个独立的语义实验开关，不会改变上面的上下文主链路：
+
+```yaml
+retrieval:
+    semantic:
+        enabled: false
+        top_k: 4
+        threshold: 0.84
+        corpus_limit: 128
+        embedding_model: "placeholder-hash-embedding"
+        embedding_dim: 64
+        async_backfill: true
+```
+
+这里要注意几件事：
+
+- `enabled` 关闭时，语义 brute-force 不参与检索，回答写回也不会走语义 backfill。
+- `async_backfill` 只控制语义 embedding 的补写，不影响 lexical QA 记录本身的写入。
+- `corpus_limit` 是 brute-force 候选上限，不是 ANN 索引；这个阶段不要把它理解成向量库。
+- 如果 provider profile 支持 embeddings，服务会优先用 provider；否则退回占位 hash embedding。
+- 运行时可见的 trace 字段包括 `qa_hit_type`、`candidate_count`、`candidate_top_score`、`candidate_source`、`semantic_candidate_count`、`semantic_top_k`、`semantic_top_score`、`semantic_model`、`semantic_source`、`final_answer_source`。
+- 评估 lexical 和 semantic 的差异时，先跑 `bash ../ai-chat-service/scripts/bench_semantic_vs_lexical.sh`，再决定是否值得进入 ANN 阶段。
+
+一个实用的判断模板是：如果 semantic-only 收益很少、trace 也显示 lexical/candidate 已经足够覆盖当前样本，就继续保留 brute-force；如果 semantic-only 收益开始稳定出现，而且 `corpus_limit` 和 lookup latency 都在上升，再考虑 ANN / 向量索引原型。
+
 启动命令：
 
 ```bash

@@ -54,6 +54,22 @@ context:
     max_idle: 2
     max_retries: 1
     retry_backoff_ms: 50
+retrieval:
+  semantic:
+    # 语义兜底实验开关。默认关闭，打开后仍然保持 exact / normalized / alias / candidate 优先。
+    enabled: false
+    # brute-force 语义候选的 top-k 观察范围。
+    top_k: 4
+    # 语义命中阈值；越高越保守。
+    threshold: 0.84
+    # 限制每个 scope 内参与 brute-force 的语义候选数。
+    corpus_limit: 128
+    # 没有可用 embedding provider 时使用的占位模型名。
+    embedding_model: "placeholder-hash-embedding"
+    # 占位向量维度。
+    embedding_dim: 64
+    # 回答写回后是否异步补写 embedding。关闭后语义检索仍可读已存在的 embedding，但不会自动补写。
+    async_backfill: true
 redis:
   host: "192.168.36.141"
   port: 6379

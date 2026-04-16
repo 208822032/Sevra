@@ -5,6 +5,7 @@ import (
 	"ai-chat-service/chat-server/data"
 	metrics_app "ai-chat-service/chat-server/metrics-app"
 	metrics_bus "ai-chat-service/chat-server/metrics-bus"
+	"ai-chat-service/chat-server/qa"
 	"ai-chat-service/chat-server/server"
 	vector_data "ai-chat-service/chat-server/vector-data"
 	"ai-chat-service/interceptor"
@@ -65,6 +66,11 @@ func main() {
 	}
 	// 初始化向量数据库
 	vector.InitDB(cnf)
+	qaStore, err := qa.NewKVLiteStore(cnf)
+	if err != nil {
+		logger.Warning(err)
+		qaStore = qa.NewNoopRetriever().(qa.Store)
+	}
 
 	recordsData := data.NewChatRecordsData(mysql.GetDB())
 
@@ -73,7 +79,7 @@ func main() {
 		log.Fatal(err)
 	}
 	s := grpc.NewServer(grpc.UnaryInterceptor(interceptor.UnaryAuthInterceptor), grpc.StreamInterceptor(metrics_app.NewStreamMiddleware(registry).WrapHandler()))
-	service := server.NewChatService(recordsData, vector_data.NewChatRecordsData(cnf, vector.GetVdb()), cnf, logger, busMetrics, contextStore) //创建grpc服务，并注册服务实现
+	service := server.NewChatService(recordsData, vector_data.NewChatRecordsData(cnf, vector.GetVdb()), cnf, logger, busMetrics, contextStore, qaStore) //创建grpc服务，并注册服务实现
 	proto.RegisterChatServer(s, service)
 
 	healthCheckSrv := health.NewServer()

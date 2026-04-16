@@ -18,10 +18,14 @@ const (
 	AnswerModeLocal    = "local"
 	AnswerModeHybrid   = "hybrid"
 	AnswerModeCacheHit = "cache_hit"
+	HitTypeAlias       = "alias"
 
-	FinalAnswerSourceLLM       = "llm"
-	FinalAnswerSourceLocal     = "local_cache"
-	FinalAnswerSourceHybridLLM = "hybrid_llm"
+	FinalAnswerSourceLLM         = "llm"
+	FinalAnswerSourceLocal       = "local_cache"
+	FinalAnswerSourceHybridLLM   = "hybrid_llm"
+	FinalAnswerSourceQAStore     = "qa_store"
+	FinalAnswerSourceQACandidate = "qa_candidate"
+	FinalAnswerSourceQASemantic  = "qa_semantic"
 
 	UsageSourceProvider  = "provider"
 	UsageSourceEstimated = "estimated"
@@ -103,28 +107,42 @@ type RetrievalHit struct {
 }
 
 type QARecord struct {
-	RecordID           string            `json:"record_id"`
-	SessionID          string            `json:"session_id"`
-	TurnSeq            int64             `json:"turn_seq"`
-	RequestMessageID   string            `json:"request_message_id,omitempty"`
-	ParentMessageID    string            `json:"parent_message_id,omitempty"`
-	Question           string            `json:"question"`
-	NormalizedQuestion string            `json:"normalized_question"`
-	QuestionHash       string            `json:"question_hash"`
-	Answer             string            `json:"answer"`
-	AnswerSummary      string            `json:"answer_summary,omitempty"`
-	SourceType         string            `json:"source_type"`
-	Provider           string            `json:"provider"`
-	Model              string            `json:"model"`
-	EmbeddingModel     string            `json:"embedding_model,omitempty"`
-	EmbeddingStatus    string            `json:"embedding_status"`
-	SimilarityScore    float64           `json:"similarity_score,omitempty"`
-	OriginRecordID     string            `json:"origin_record_id,omitempty"`
-	RetrievedHits      []RetrievalHit    `json:"retrieved_hits,omitempty"`
-	Metadata           map[string]string `json:"metadata,omitempty"`
-	CreatedAt          int64             `json:"created_at"`
-	UpdatedAt          int64             `json:"updated_at"`
-	ExpiresAt          int64             `json:"expires_at,omitempty"`
+	QuestionID          string            `json:"question_id,omitempty"`
+	RecordID            string            `json:"record_id,omitempty"`
+	CanonicalQuestionID string            `json:"canonical_question_id,omitempty"`
+	SessionID           string            `json:"session_id"`
+	TurnSeq             int64             `json:"turn_seq"`
+	RequestMessageID    string            `json:"request_message_id,omitempty"`
+	ParentMessageID     string            `json:"parent_message_id,omitempty"`
+	Question            string            `json:"question"`
+	RawQuestion         string            `json:"raw_question,omitempty"`
+	CanonicalQuestion   string            `json:"canonical_question,omitempty"`
+	QuestionHash        string            `json:"question_hash"`
+	RawQuestionHash     string            `json:"raw_question_hash,omitempty"`
+	NormalizedQuestion  string            `json:"normalized_question"`
+	Answer              string            `json:"answer"`
+	AnswerSummary       string            `json:"answer_summary,omitempty"`
+	Scope               string            `json:"scope,omitempty"`
+	PromptVersion       string            `json:"prompt_version,omitempty"`
+	SourceType          string            `json:"source_type"`
+	HitType             string            `json:"hit_type,omitempty"`
+	HitCount            int64             `json:"hit_count,omitempty"`
+	LastHitAt           int64             `json:"last_hit_at,omitempty"`
+	Provider            string            `json:"provider"`
+	Model               string            `json:"model"`
+	EmbeddingModel      string            `json:"embedding_model,omitempty"`
+	EmbeddingStatus     string            `json:"embedding_status"`
+	EmbeddingDim        int               `json:"embedding_dim,omitempty"`
+	EmbeddingUpdatedAt  int64             `json:"embedding_updated_at,omitempty"`
+	EmbeddingRef        string            `json:"embedding_ref,omitempty"`
+	SemanticReady       bool              `json:"semantic_ready,omitempty"`
+	SimilarityScore     float64           `json:"similarity_score,omitempty"`
+	OriginRecordID      string            `json:"origin_record_id,omitempty"`
+	RetrievedHits       []RetrievalHit    `json:"retrieved_hits,omitempty"`
+	Metadata            map[string]string `json:"metadata,omitempty"`
+	CreatedAt           int64             `json:"created_at"`
+	UpdatedAt           int64             `json:"updated_at"`
+	ExpiresAt           int64             `json:"expires_at,omitempty"`
 }
 
 type UsageInfo struct {
@@ -142,21 +160,30 @@ type BudgetInfo struct {
 }
 
 type AnswerTrace struct {
-	AnswerMode         string         `json:"answer_mode"`
-	Provider           string         `json:"provider"`
-	Model              string         `json:"model"`
-	SelectedProvider   string         `json:"selected_provider,omitempty"`
-	SelectedModel      string         `json:"selected_model,omitempty"`
-	ActualProvider     string         `json:"actual_provider,omitempty"`
-	ActualModel        string         `json:"actual_model,omitempty"`
-	FallbackUsed       bool           `json:"fallback_used,omitempty"`
-	FallbackReason     string         `json:"fallback_reason,omitempty"`
-	UsedLocalRetrieval bool           `json:"used_local_retrieval"`
-	CacheHit           bool           `json:"cache_hit"`
-	FinalAnswerSource  string         `json:"final_answer_source"`
-	GenerationProvider string         `json:"generation_provider,omitempty"`
-	GenerationModel    string         `json:"generation_model,omitempty"`
-	RetrievedHits      []RetrievalHit `json:"retrieved_hits,omitempty"`
+	AnswerMode             string         `json:"answer_mode"`
+	Provider               string         `json:"provider"`
+	Model                  string         `json:"model"`
+	SelectedProvider       string         `json:"selected_provider,omitempty"`
+	SelectedModel          string         `json:"selected_model,omitempty"`
+	ActualProvider         string         `json:"actual_provider,omitempty"`
+	ActualModel            string         `json:"actual_model,omitempty"`
+	FallbackUsed           bool           `json:"fallback_used,omitempty"`
+	FallbackReason         string         `json:"fallback_reason,omitempty"`
+	UsedLocalRetrieval     bool           `json:"used_local_retrieval"`
+	CacheHit               bool           `json:"cache_hit"`
+	QAHitType              string         `json:"qa_hit_type,omitempty"`
+	CandidateCount         int            `json:"candidate_count,omitempty"`
+	CandidateTopScore      float64        `json:"candidate_top_score,omitempty"`
+	CandidateSource        string         `json:"candidate_source,omitempty"`
+	SemanticCandidateCount int            `json:"semantic_candidate_count,omitempty"`
+	SemanticTopK           int            `json:"semantic_top_k,omitempty"`
+	SemanticTopScore       float64        `json:"semantic_top_score,omitempty"`
+	SemanticModel          string         `json:"semantic_model,omitempty"`
+	SemanticSource         string         `json:"semantic_source,omitempty"`
+	FinalAnswerSource      string         `json:"final_answer_source"`
+	GenerationProvider     string         `json:"generation_provider,omitempty"`
+	GenerationModel        string         `json:"generation_model,omitempty"`
+	RetrievedHits          []RetrievalHit `json:"retrieved_hits,omitempty"`
 }
 
 type ResponseMeta struct {
@@ -268,6 +295,12 @@ func NormalizeQuestion(question string) string {
 func QuestionHash(question string) string {
 	normalized := NormalizeQuestion(question)
 	sum := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(sum[:])
+}
+
+func ExactQuestionHash(question string) string {
+	trimmed := strings.TrimSpace(question)
+	sum := sha256.Sum256([]byte(trimmed))
 	return hex.EncodeToString(sum[:])
 }
 
