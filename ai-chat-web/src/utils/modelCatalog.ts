@@ -161,11 +161,16 @@ export function normalizeAnswerTrace(raw: any): Chat.AnswerTrace {
   const selectedModel = toText(raw?.selectedModel ?? raw?.selected_model)
   const actualProvider = toText(raw?.actualProvider ?? raw?.actual_provider)
   const actualModel = toText(raw?.actualModel ?? raw?.actual_model)
+  const answerSourceKind = toText(raw?.answerSourceKind ?? raw?.answer_source_kind)
+  const finalAnswerSource = toText(raw?.finalAnswerSource ?? raw?.final_answer_source)
   const provider = toText(raw?.provider) || actualProvider || selectedProvider
   const model = toText(raw?.model) || actualModel || selectedModel
   const normalizedHits = Array.isArray(raw?.retrievedHits ?? raw?.retrieved_hits)
     ? (raw.retrievedHits ?? raw.retrieved_hits).map(toRetrievalHit)
     : undefined
+  const derivedAnswerSourceKind: Chat.AnswerTrace['answerSourceKind'] = answerSourceKind === 'cache' || answerSourceKind === 'ai'
+    ? answerSourceKind
+    : (toBoolean(raw?.cacheHit ?? raw?.cache_hit) || /^qa_/i.test(finalAnswerSource) || finalAnswerSource === 'local_cache' ? 'cache' : 'ai')
 
   return {
     answerMode: toText(raw?.answerMode ?? raw?.answer_mode) as Chat.AnswerTrace['answerMode'],
@@ -177,9 +182,23 @@ export function normalizeAnswerTrace(raw: any): Chat.AnswerTrace {
     actualModel: actualModel || model,
     fallbackUsed: toBoolean(raw?.fallbackUsed ?? raw?.fallback_used),
     fallbackReason: toText(raw?.fallbackReason ?? raw?.fallback_reason),
+    answerSourceKind: derivedAnswerSourceKind,
     usedLocalRetrieval: toBoolean(raw?.usedLocalRetrieval ?? raw?.used_local_retrieval),
     cacheHit: toBoolean(raw?.cacheHit ?? raw?.cache_hit),
-    finalAnswerSource: toText(raw?.finalAnswerSource ?? raw?.final_answer_source),
+    qaHitType: toText(raw?.qaHitType ?? raw?.qa_hit_type),
+    semanticCandidateCount: toNumber(raw?.semanticCandidateCount ?? raw?.semantic_candidate_count),
+    semanticTopK: toNumber(raw?.semanticTopK ?? raw?.semantic_top_k),
+    semanticTopScore: toNumber(raw?.semanticTopScore ?? raw?.semantic_top_score),
+    semanticModeRequested: toText(raw?.semanticModeRequested ?? raw?.semantic_mode_requested),
+    semanticModeUsed: toText(raw?.semanticModeUsed ?? raw?.semantic_mode_used),
+    semanticFallbackUsed: toBoolean(raw?.semanticFallbackUsed ?? raw?.semantic_fallback_used),
+    semanticFallbackReason: toText(raw?.semanticFallbackReason ?? raw?.semantic_fallback_reason),
+    semanticLatencyMS: toNumber(raw?.semanticLatencyMS ?? raw?.semantic_latency_ms),
+    semanticANNLatencyMS: toNumber(raw?.semanticANNLatencyMS ?? raw?.semantic_ann_latency_ms),
+    semanticBruteForceLatencyMS: toNumber(raw?.semanticBruteForceLatencyMS ?? raw?.semantic_brute_force_latency_ms),
+    semanticModel: toText(raw?.semanticModel ?? raw?.semantic_model),
+    semanticSource: toText(raw?.semanticSource ?? raw?.semantic_source),
+    finalAnswerSource,
     generationProvider: toText(raw?.generationProvider ?? raw?.generation_provider),
     generationModel: toText(raw?.generationModel ?? raw?.generation_model),
     retrievedHits: normalizedHits,

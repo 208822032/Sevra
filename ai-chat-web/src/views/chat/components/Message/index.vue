@@ -58,10 +58,51 @@ const actualLabel = computed(() => {
   return [provider, model].filter(Boolean).join(' / ') || '-'
 })
 
-const cacheLabel = computed(() => {
+const answerSourceKind = computed(() => {
+  const kind = props.trace?.answerSourceKind?.trim().toLowerCase()
+  if (kind === 'cache' || kind === 'ai')
+    return kind
+  if (props.trace?.cacheHit)
+    return 'cache'
+  if ((props.trace?.finalAnswerSource || '').startsWith('qa_') || props.trace?.finalAnswerSource === 'local_cache')
+    return 'cache'
+  return 'ai'
+})
+
+const answerSourceLabel = computed(() => (answerSourceKind.value === 'cache' ? '缓存回答' : 'AI 回答'))
+
+const answerSourceDetail = computed(() => {
   if (!props.trace)
-    return '-'
-  return props.trace.cacheHit ? '命中' : '未命中'
+    return ''
+  if (answerSourceKind.value === 'cache') {
+    const detail: string[] = ['本地命中']
+    if (props.trace.qaHitType)
+      detail.push(props.trace.qaHitType)
+    if (props.trace.semanticModeUsed)
+      detail.push(`语义 ${props.trace.semanticModeUsed}`)
+    return detail.join(' · ')
+  }
+  if (props.trace.usedLocalRetrieval || props.trace.finalAnswerSource === 'hybrid_llm')
+    return 'AI 生成 · 使用本地检索上下文'
+  return 'AI 生成'
+})
+
+const semanticModeLabel = computed(() => {
+  if (!props.trace)
+    return ''
+  const requested = props.trace.semanticModeRequested?.trim() || ''
+  const used = props.trace.semanticModeUsed?.trim() || ''
+  if (!requested && !used)
+    return ''
+  if (requested && used && requested !== used)
+    return `${requested} → ${used}`
+  return used || requested
+})
+
+const semanticFallbackNote = computed(() => {
+  if (!props.trace?.semanticFallbackUsed)
+    return ''
+  return props.trace.semanticFallbackReason ? `语义回退：${props.trace.semanticFallbackReason}` : '语义回退'
 })
 
 function formatTokenCount(value: number) {
@@ -70,12 +111,16 @@ function formatTokenCount(value: number) {
   return new Intl.NumberFormat('zh-CN').format(value)
 }
 
-const contextUsedTokens = computed(() => props.usage?.totalTokens ?? 0)
+const tokenPromptCount = computed(() => props.usage?.promptTokens ?? 0)
+
+const tokenCompletionCount = computed(() => props.usage?.completionTokens ?? 0)
+
+const tokenTotalCount = computed(() => props.usage?.totalTokens ?? (tokenPromptCount.value + tokenCompletionCount.value))
 
 const contextRemainingTokens = computed(() => props.budget?.estimatedRemainingContextTokens ?? 0)
 
 const contextUsagePercent = computed(() => {
-  const used = contextUsedTokens.value
+  const used = tokenTotalCount.value
   const remaining = contextRemainingTokens.value
   const total = used + remaining
   if (total <= 0)
@@ -83,16 +128,22 @@ const contextUsagePercent = computed(() => {
   return Number(((used / total) * 100).toFixed(2))
 })
 
-const contextSummary = computed(() => {
-  const parts: string[] = []
+const tokenUsageLabel = computed(() => {
+  if (!props.usage)
+    return ''
+  if (answerSourceKind.value === 'cache')
+    return '缓存命中 / 非 AI 调用'
+  if (props.usage.usageSource === 'provider')
+    return '模型计数'
+  if (props.usage.usageSource === 'estimated')
+    return '本地估算'
+  return props.usage.usageSource || ''
+})
 
-  if (props.usage?.totalTokens != null)
-    parts.push(`${formatTokenCount(props.usage.totalTokens)} 已用`)
-
-  if (props.budget?.estimatedRemainingContextTokens != null)
-    parts.push(`${formatTokenCount(props.budget.estimatedRemainingContextTokens)} 剩余`)
-
-  return parts.join(' · ')
+const tokenUsageNote = computed(() => {
+  if (answerSourceKind.value !== 'cache')
+    return ''
+  return '本次未调用 AI，下面的 token 为本地估算'
 })
 
 const contextBarStyle = computed(() => ({
@@ -204,13 +255,46 @@ function handleRegenerate() {
       </div>
       <div v-if="!inversion && (trace || usage || budget)" class="mt-3 space-y-2">
         <div
-          v-if="contextSummary"
+          v-if="usage || budget"
           class="rounded-2xl border border-slate-200/70 bg-white/75 px-3 py-2 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5"
         >
           <div class="flex items-center justify-between gap-3 text-[11px] font-medium text-slate-500 dark:text-slate-400">
-            <span>上下文使用</span>
-            <span>{{ contextSummary }}</span>
+            <span>Token 统计</span>
+            <span>{{ tokenUsageLabel || answerSourceLabel }}</span>
           </div>
+          <div class="mt-2 grid grid-cols-3 gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+            <div class="rounded-2xl border border-slate-200/70 bg-white/70 px-2.5 py-2 dark:border-white/10 dark:bg-white/5">
+              <p class="text-[10px] uppercase tracking-[0.2em] text-slate-400">
+                输入
+              </p>
+              <p class="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-100">
+                {{ formatTokenCount(tokenPromptCount) }}
+              </p>
+            </div>
+            <div class="rounded-2xl border border-slate-200/70 bg-white/70 px-2.5 py-2 dark:border-white/10 dark:bg-white/5">
+              <p class="text-[10px] uppercase tracking-[0.2em] text-slate-400">
+                输出
+              </p>
+              <p class="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-100">
+                {{ formatTokenCount(tokenCompletionCount) }}
+              </p>
+            </div>
+            <div class="rounded-2xl border border-slate-200/70 bg-white/70 px-2.5 py-2 dark:border-white/10 dark:bg-white/5">
+              <p class="text-[10px] uppercase tracking-[0.2em] text-slate-400">
+                总计
+              </p>
+              <p class="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-100">
+                {{ formatTokenCount(tokenTotalCount) }}
+              </p>
+            </div>
+          </div>
+          <div class="mt-2 flex items-center justify-between gap-3 text-[11px] text-slate-400 dark:text-slate-500">
+            <span v-if="budget">剩余上下文 {{ formatTokenCount(contextRemainingTokens) }}</span>
+            <span>{{ answerSourceDetail }}</span>
+          </div>
+          <p v-if="tokenUsageNote" class="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+            {{ tokenUsageNote }}
+          </p>
           <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200/80 dark:bg-white/10">
             <div class="h-full rounded-full bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 transition-all duration-500" :style="contextBarStyle" />
           </div>
@@ -223,7 +307,13 @@ function handleRegenerate() {
             实际 · {{ actualLabel }}
           </span>
           <span class="rounded-full border border-slate-200/70 bg-white/70 px-2 py-0.5 font-medium dark:border-white/10 dark:bg-white/5">
-            缓存 · {{ cacheLabel }}
+            来源 · {{ answerSourceLabel }}
+          </span>
+          <span v-if="trace.qaHitType" class="rounded-full border border-slate-200/70 bg-white/70 px-2 py-0.5 font-medium dark:border-white/10 dark:bg-white/5">
+            命中层 · {{ trace.qaHitType }}
+          </span>
+          <span v-if="semanticModeLabel" class="rounded-full border border-slate-200/70 bg-white/70 px-2 py-0.5 font-medium dark:border-white/10 dark:bg-white/5">
+            语义模式 · {{ semanticModeLabel }}
           </span>
           <span class="rounded-full border border-slate-200/70 bg-white/70 px-2 py-0.5 font-medium dark:border-white/10 dark:bg-white/5">
             模式 · {{ trace.answerMode }}
@@ -231,6 +321,9 @@ function handleRegenerate() {
         </div>
         <p v-if="fallbackNote" class="text-[11px] text-amber-500">
           {{ fallbackNote }}
+        </p>
+        <p v-if="semanticFallbackNote" class="text-[11px] text-amber-500">
+          {{ semanticFallbackNote }}
         </p>
         <p v-if="trace?.retrievedHits?.length" class="text-[11px] text-slate-400 dark:text-slate-500">
           检索命中 · {{ trace.retrievedHits.length }}

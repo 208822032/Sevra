@@ -162,6 +162,139 @@ func TestKVLiteStoreSemanticLookupHit(t *testing.T) {
 	}
 }
 
+func TestKVLiteStoreSemanticLookupANNModeAndCache(t *testing.T) {
+	backend := newMemoryKVLiteBackend()
+	store := newSemanticTestStore(t, backend, true, "placeholder-hash-embedding", DefaultSemanticEmbeddingDim, 0.80)
+	scope := BuildScope("deepseek", "deepseek-chat", "v1")
+	question := "How do I reset the cache safely?"
+	record := newCandidateQARecord(question, "ann answer", "deepseek", "deepseek-chat", scope)
+	seedSemanticOnlyRecord(t, store, backend, record, time.Minute, "placeholder-hash-embedding", DefaultSemanticEmbeddingDim)
+
+	index, err := store.ensureSemanticANNIndex(context.Background(), scope, 16)
+	if err != nil {
+		t.Fatalf("ensure ann index: %v", err)
+	}
+	if index == nil || len(index.Entries) != 1 {
+		t.Fatalf("expected one ANN entry, got %+v", index)
+	}
+	cachedIndex, err := store.ensureSemanticANNIndex(context.Background(), scope, 16)
+	if err != nil {
+		t.Fatalf("ensure cached ann index: %v", err)
+	}
+	if cachedIndex != index {
+		t.Fatalf("expected cached ANN index to be reused")
+	}
+
+	hit, _, err := store.lookupBySemantic(context.Background(), LookupRequest{
+		Question:               question,
+		ExactQuestionHash:      ExactQuestionHash(question),
+		NormalizedQuestionHash: QuestionHash(question),
+		Provider:               "deepseek",
+		Model:                  "deepseek-chat",
+		PromptVersion:          "v1",
+		Scope:                  scope,
+		SemanticEnabled:        true,
+		SemanticMode:           SemanticRecallModeANN,
+		SemanticTopK:           2,
+		SemanticThreshold:      0.80,
+		SemanticCorpusLimit:    16,
+	})
+	if err != nil {
+		t.Fatalf("ann semantic lookup: %v", err)
+	}
+	if !hit.Hit || hit.SemanticSource != SemanticRecallSourceANNBucketedLSH {
+		t.Fatalf("expected ANN semantic hit, got %+v", hit)
+	}
+	if hit.SemanticModeRequested != SemanticRecallModeANN || hit.SemanticModeUsed != SemanticRecallModeANN {
+		t.Fatalf("expected ANN mode fields to be populated, got %+v", hit)
+	}
+	if hit.SemanticFallbackUsed {
+		t.Fatalf("did not expect ANN fallback on a healthy lookup, got %+v", hit)
+	}
+	if hit.Answer != "ann answer" {
+		t.Fatalf("unexpected ann answer: %+v", hit)
+	}
+	if hit.SemanticCandidateCount == 0 || hit.SemanticTopScore <= 0 {
+		t.Fatalf("expected ANN candidate stats to be populated: %+v", hit)
+	}
+	if hit.Metadata["semantic_mode_requested"] != SemanticRecallModeANN || hit.Metadata["semantic_mode_used"] != SemanticRecallModeANN {
+		t.Fatalf("expected ANN metadata to be populated, got %+v", hit.Metadata)
+	}
+	if hit.Metadata["semantic_fallback_used"] != "false" {
+		t.Fatalf("expected ANN metadata to record no fallback, got %+v", hit.Metadata)
+	}
+}
+
+func TestKVLiteStoreSemanticLookupANNFallsBackToBruteForce(t *testing.T) {
+	backend := newMemoryKVLiteBackend()
+	store := newSemanticTestStore(t, backend, true, "placeholder-hash-embedding", DefaultSemanticEmbeddingDim, 0.80)
+	scope := BuildScope("deepseek", "deepseek-chat", "v1")
+	question := "How do I reset the cache safely?"
+	record := newCandidateQARecord(question, "fallback answer", "deepseek", "deepseek-chat", scope)
+	seedSemanticOnlyRecord(t, store, backend, record, time.Minute, "placeholder-hash-embedding", DefaultSemanticEmbeddingDim)
+
+	cacheKey := store.semanticANNCacheKey(scope, 16)
+	store.semanticANNCacheMu.Lock()
+	store.semanticANNCache[cacheKey] = &semanticANNIndex{
+		Scope:        normalizeScope(scope),
+		CorpusLimit:  16,
+		EmbeddingDim: DefaultSemanticEmbeddingDim,
+		Entries: map[string]semanticANNIndexEntry{
+			record.QuestionID: {
+				Record:         cloneQARecord(record),
+				Vector:         semanticVectorFromText(question, DefaultSemanticEmbeddingDim),
+				EmbeddingModel: "placeholder-hash-embedding",
+			},
+		},
+		Buckets: map[string][]string{
+			"1": []string{record.QuestionID},
+		},
+	}
+	store.semanticANNCacheMu.Unlock()
+
+	hit, err := store.Lookup(context.Background(), LookupRequest{
+		Question:               question,
+		ExactQuestionHash:      ExactQuestionHash(question),
+		NormalizedQuestionHash: QuestionHash(question),
+		Provider:               "deepseek",
+		Model:                  "deepseek-chat",
+		PromptVersion:          "v1",
+		Scope:                  scope,
+		SemanticEnabled:        true,
+		SemanticMode:           SemanticRecallModeANN,
+		SemanticTopK:           2,
+		SemanticThreshold:      0.80,
+		SemanticCorpusLimit:    16,
+	})
+	if err != nil {
+		t.Fatalf("ann semantic fallback lookup: %v", err)
+	}
+	if !hit.Hit || hit.HitType != HitTypeSemantic {
+		t.Fatalf("expected semantic hit after brute-force fallback, got %+v", hit)
+	}
+	if hit.Answer != "fallback answer" {
+		t.Fatalf("unexpected fallback answer: %+v", hit)
+	}
+	if hit.SemanticModeRequested != SemanticRecallModeANN || hit.SemanticModeUsed != SemanticRecallModeBruteForce {
+		t.Fatalf("expected ann request with brute-force fallback, got %+v", hit)
+	}
+	if !hit.SemanticFallbackUsed || !strings.Contains(strings.ToLower(hit.SemanticFallbackReason), "ann index projections are missing") {
+		t.Fatalf("expected fallback reason to mention missing projections, got %+v", hit)
+	}
+	if hit.SemanticSource != SemanticRecallSourceANNFallback {
+		t.Fatalf("expected ANN fallback source, got %+v", hit)
+	}
+	if hit.Metadata["semantic_mode_requested"] != SemanticRecallModeANN || hit.Metadata["semantic_mode_used"] != SemanticRecallModeBruteForce {
+		t.Fatalf("expected fallback metadata to record requested and used mode, got %+v", hit.Metadata)
+	}
+	if hit.Metadata["semantic_fallback_used"] != "true" {
+		t.Fatalf("expected fallback metadata to record fallback usage, got %+v", hit.Metadata)
+	}
+	if !strings.Contains(strings.ToLower(hit.Metadata["semantic_fallback_reason"]), "ann index projections are missing") {
+		t.Fatalf("expected fallback metadata to record reason, got %+v", hit.Metadata)
+	}
+}
+
 func TestKVLiteStoreSemanticLookupMissWhenEmbeddingMissing(t *testing.T) {
 	backend := newMemoryKVLiteBackend()
 	store := newSemanticTestStore(t, backend, true, "placeholder-hash-embedding", DefaultSemanticEmbeddingDim, 0.80)

@@ -43,31 +43,36 @@ type openaiConf struct {
 	TimeoutMS         int
 }
 type app struct {
-	config             *config.Config
-	openaiConf         *openaiConf
-	log                log.ILogger
-	contextStore       chat_context.SessionStore
-	data               data.IChatRecordsData
-	vectorData         vector_data.IChatRecordsData
-	providerRegistry   *provider.Registry
-	provider           provider.Provider
-	providerProfile    provider.ProviderProfile
-	qaRetriever        qa.Retriever
-	qaStore            qa.Store
-	selectedProvider   string
-	selectedModel      string
-	fallbackUsed       bool
-	fallbackReason     string
-	routeDecision      llm.RouteDecision
-	retrievalHits      []llm.RetrievalHit
-	promptTokensSource string
-	keywordsFn         func(context.Context, *proto.ChatCompletionRequest) []string
-	sensitiveFn        func(context.Context, *proto.ChatCompletionRequest) (bool, string, error)
-	fastPathCache      *sessionFastPathCache
-	busMetrics         *metrics_bus.BusMetrics
-	sessionID          string
-	pendingTurn        *chat_context.TurnRecord
-	pendingMeta        *chat_context.SessionMeta
+	config                  *config.Config
+	openaiConf              *openaiConf
+	log                     log.ILogger
+	contextStore            chat_context.SessionStore
+	data                    data.IChatRecordsData
+	vectorData              vector_data.IChatRecordsData
+	providerRegistry        *provider.Registry
+	provider                provider.Provider
+	providerProfile         provider.ProviderProfile
+	qaRetriever             qa.Retriever
+	qaStore                 qa.Store
+	semanticMode            string
+	semanticShadowConfig    qa.SemanticShadowConfig
+	qaLookupResult          qa.LookupResult
+	selectedProvider        string
+	selectedModel           string
+	fallbackUsed            bool
+	fallbackReason          string
+	routeDecision           llm.RouteDecision
+	retrievalHits           []llm.RetrievalHit
+	promptTokensSource      string
+	keywordsFn              func(context.Context, *proto.ChatCompletionRequest) []string
+	sensitiveFn             func(context.Context, *proto.ChatCompletionRequest) (bool, string, error)
+	fastPathCache           *sessionFastPathCache
+	busMetrics              *metrics_bus.BusMetrics
+	semanticShadowQuery     string
+	semanticShadowRequestID string
+	sessionID               string
+	pendingTurn             *chat_context.TurnRecord
+	pendingMeta             *chat_context.SessionMeta
 }
 
 func (s *chatService) newApp(in *proto.ChatCompletionRequest, contextStore chat_context.SessionStore, stream bool) *app {
@@ -161,25 +166,27 @@ func (s *chatService) newApp(in *proto.ChatCompletionRequest, contextStore chat_
 	}
 	conf.Model = actualModel
 	return &app{
-		config:           s.config,
-		openaiConf:       conf,
-		log:              s.log,
-		contextStore:     contextStore,
-		data:             s.data,
-		vectorData:       s.vectorData,
-		providerRegistry: registry,
-		provider:         actualProvider,
-		providerProfile:  actualProfile,
-		qaRetriever:      s.qaRetriever,
-		qaStore:          s.qaStore,
-		selectedProvider: selectedProvider,
-		selectedModel:    selectedModel,
-		fallbackUsed:     selection.FallbackUsed,
-		fallbackReason:   selection.FallbackReason,
-		keywordsFn:       s.keywordsFn,
-		sensitiveFn:      s.sensitiveFn,
-		fastPathCache:    s.ensureFastPathCache(),
-		busMetrics:       s.busMetrics,
+		config:               s.config,
+		openaiConf:           conf,
+		log:                  s.log,
+		contextStore:         contextStore,
+		data:                 s.data,
+		vectorData:           s.vectorData,
+		providerRegistry:     registry,
+		provider:             actualProvider,
+		providerProfile:      actualProfile,
+		qaRetriever:          s.qaRetriever,
+		qaStore:              s.qaStore,
+		semanticMode:         semanticModeFromConfig(s.config),
+		semanticShadowConfig: semanticShadowConfigFromConfig(s.config),
+		selectedProvider:     selectedProvider,
+		selectedModel:        selectedModel,
+		fallbackUsed:         selection.FallbackUsed,
+		fallbackReason:       selection.FallbackReason,
+		keywordsFn:           s.keywordsFn,
+		sensitiveFn:          s.sensitiveFn,
+		fastPathCache:        s.ensureFastPathCache(),
+		busMetrics:           s.busMetrics,
 	}
 }
 func (a *app) getOpenaiClient() *openai.Client {

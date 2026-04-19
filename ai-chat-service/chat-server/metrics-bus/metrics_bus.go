@@ -7,43 +7,52 @@ import (
 )
 
 type BusMetrics struct {
-	QuestionsTotalCounter                   prometheus.Counter
-	KeywordsQuestionsTotalCounter           prometheus.Counter
-	SensitiveQuestionsTotalCounter          prometheus.Counter
-	ErrQuestionsTotalCounter                prometheus.Counter
-	KvliteReadLatencyHistogram              prometheus.Histogram
-	KvliteWriteLatencyHistogram             prometheus.Histogram
-	KvliteTimeoutTotalCounter               prometheus.Counter
-	KvliteFallbackTotalCounter              prometheus.Counter
-	KvliteConnErrorTotalCounter             prometheus.Counter
-	KvliteMetaRepairTotalCounter            prometheus.Counter
-	KvliteShadowReadTotalCounter            prometheus.Counter
-	KvliteCompareMismatchTotalCounter       prometheus.Counter
-	KvliteCompareRepairTotalCounter         prometheus.Counter
-	FastPathHitTotalCounter                 prometheus.Counter
-	FastPathMissTotalCounter                prometheus.Counter
-	SummaryBypassedTotalCounter             prometheus.Counter
-	MetaCacheHitTotalCounter                prometheus.Counter
-	MetaCacheMissTotalCounter               prometheus.Counter
-	MetaCacheRefreshTotalCounter            prometheus.Counter
-	MetaCacheStaleTotalCounter              prometheus.Counter
-	RecentWindowCacheHitTotalCounter        prometheus.Counter
-	RecentWindowCacheMissTotalCounter       prometheus.Counter
-	RecentWindowCacheRefreshTotalCounter    prometheus.Counter
-	RecentWindowCacheStaleTotalCounter      prometheus.Counter
-	LoadSessionMetaLatencyHistogram         prometheus.Histogram
-	LoadRecentTurnsLatencyHistogram         prometheus.Histogram
-	HotSessionReadLatencyHistogram          prometheus.Histogram
-	HotSessionWriteThenReadLatencyHistogram prometheus.Histogram
-	SummaryBuildLatencyHistogram            prometheus.Histogram
-	SummaryBuildFailTotalCounter            prometheus.Counter
-	SummaryHitTotalCounter                  prometheus.Counter
-	SummaryMissTotalCounter                 prometheus.Counter
-	SummaryStaleTotalCounter                prometheus.Counter
-	SummaryTriggerTotalCounter              prometheus.Counter
-	SummaryPromptTokensBeforeHistogram      prometheus.Histogram
-	SummaryPromptTokensAfterHistogram       prometheus.Histogram
-	SummarySavedTokensHistogram             prometheus.Histogram
+	QuestionsTotalCounter                    prometheus.Counter
+	KeywordsQuestionsTotalCounter            prometheus.Counter
+	SensitiveQuestionsTotalCounter           prometheus.Counter
+	ErrQuestionsTotalCounter                 prometheus.Counter
+	KvliteReadLatencyHistogram               prometheus.Histogram
+	KvliteWriteLatencyHistogram              prometheus.Histogram
+	KvliteTimeoutTotalCounter                prometheus.Counter
+	KvliteFallbackTotalCounter               prometheus.Counter
+	KvliteConnErrorTotalCounter              prometheus.Counter
+	KvliteMetaRepairTotalCounter             prometheus.Counter
+	KvliteShadowReadTotalCounter             prometheus.Counter
+	KvliteCompareMismatchTotalCounter        prometheus.Counter
+	KvliteCompareRepairTotalCounter          prometheus.Counter
+	FastPathHitTotalCounter                  prometheus.Counter
+	FastPathMissTotalCounter                 prometheus.Counter
+	SummaryBypassedTotalCounter              prometheus.Counter
+	MetaCacheHitTotalCounter                 prometheus.Counter
+	MetaCacheMissTotalCounter                prometheus.Counter
+	MetaCacheRefreshTotalCounter             prometheus.Counter
+	MetaCacheStaleTotalCounter               prometheus.Counter
+	RecentWindowCacheHitTotalCounter         prometheus.Counter
+	RecentWindowCacheMissTotalCounter        prometheus.Counter
+	RecentWindowCacheRefreshTotalCounter     prometheus.Counter
+	RecentWindowCacheStaleTotalCounter       prometheus.Counter
+	LoadSessionMetaLatencyHistogram          prometheus.Histogram
+	LoadRecentTurnsLatencyHistogram          prometheus.Histogram
+	HotSessionReadLatencyHistogram           prometheus.Histogram
+	HotSessionWriteThenReadLatencyHistogram  prometheus.Histogram
+	SummaryBuildLatencyHistogram             prometheus.Histogram
+	SummaryBuildFailTotalCounter             prometheus.Counter
+	SummaryHitTotalCounter                   prometheus.Counter
+	SummaryMissTotalCounter                  prometheus.Counter
+	SummaryStaleTotalCounter                 prometheus.Counter
+	SummaryTriggerTotalCounter               prometheus.Counter
+	SummaryPromptTokensBeforeHistogram       prometheus.Histogram
+	SummaryPromptTokensAfterHistogram        prometheus.Histogram
+	SummarySavedTokensHistogram              prometheus.Histogram
+	AnnShadowQueriesTotalCounter             prometheus.Counter
+	AnnShadowHitsTotalCounter                prometheus.Counter
+	AnnShadowSameAsBruteforceTotalCounter    prometheus.Counter
+	AnnShadowDiffTotalCounter                prometheus.Counter
+	AnnShadowMissVsBruteforceHitTotalCounter prometheus.Counter
+	AnnShadowHitVsBruteforceMissTotalCounter prometheus.Counter
+	AnnShadowErrorsTotalCounter              prometheus.Counter
+	AnnShadowFallbackTotalCounter            prometheus.Counter
+	AnnShadowLatencyHistogram                prometheus.Histogram
 }
 
 const (
@@ -321,6 +330,70 @@ func NewBusMetrics(registry *prometheus.Registry) *BusMetrics {
 		Help:        "记录summary节省的prompt tokens",
 		Buckets:     prometheus.DefBuckets,
 	})
+	annShadowQueriesTotalCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "ann_shadow_queries_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "记录ANN影子查询次数",
+	})
+	annShadowHitsTotalCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "ann_shadow_hits_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "记录ANN影子查询命中次数",
+	})
+	annShadowSameAsBruteforceTotalCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "ann_shadow_same_as_bruteforce_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "记录ANN与brute-force top1一致的次数",
+	})
+	annShadowDiffTotalCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "ann_shadow_diff_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "记录ANN与brute-force发生差异的次数",
+	})
+	annShadowMissVsBruteforceHitTotalCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "ann_shadow_miss_vs_bruteforce_hit_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "记录brute-force命中但ANN未命中的次数",
+	})
+	annShadowHitVsBruteforceMissTotalCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "ann_shadow_hit_vs_bruteforce_miss_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "记录brute-force未命中但ANN命中的次数",
+	})
+	annShadowErrorsTotalCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "ann_shadow_errors_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "记录ANN影子执行错误次数",
+	})
+	annShadowFallbackTotalCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "ann_shadow_fallback_total",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "记录ANN影子回退次数",
+	})
+	annShadowLatencyHistogram := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Namespace:   NAMESPACE,
+		Subsystem:   SUBSYSTEM,
+		Name:        "ann_shadow_latency_seconds",
+		ConstLabels: map[string]string{"app": "ai_chat"},
+		Help:        "记录ANN影子查询耗时",
+		Buckets:     prometheus.DefBuckets,
+	})
 	registry.MustRegister(
 		questionsTotalCounter,
 		keywordsQuestionsTotalCounter,
@@ -359,45 +432,63 @@ func NewBusMetrics(registry *prometheus.Registry) *BusMetrics {
 		summaryPromptTokensBeforeHistogram,
 		summaryPromptTokensAfterHistogram,
 		summarySavedTokensHistogram,
+		annShadowQueriesTotalCounter,
+		annShadowHitsTotalCounter,
+		annShadowSameAsBruteforceTotalCounter,
+		annShadowDiffTotalCounter,
+		annShadowMissVsBruteforceHitTotalCounter,
+		annShadowHitVsBruteforceMissTotalCounter,
+		annShadowErrorsTotalCounter,
+		annShadowFallbackTotalCounter,
+		annShadowLatencyHistogram,
 	)
 	return &BusMetrics{
-		QuestionsTotalCounter:                   questionsTotalCounter,
-		KeywordsQuestionsTotalCounter:           keywordsQuestionsTotalCounter,
-		SensitiveQuestionsTotalCounter:          sensitiveQuestionsTotalCounter,
-		ErrQuestionsTotalCounter:                errQuestionsTotalCounter,
-		KvliteReadLatencyHistogram:              kvliteReadLatencyHistogram,
-		KvliteWriteLatencyHistogram:             kvliteWriteLatencyHistogram,
-		KvliteTimeoutTotalCounter:               kvliteTimeoutTotalCounter,
-		KvliteFallbackTotalCounter:              kvliteFallbackTotalCounter,
-		KvliteConnErrorTotalCounter:             kvliteConnErrorTotalCounter,
-		KvliteMetaRepairTotalCounter:            kvliteMetaRepairTotalCounter,
-		KvliteShadowReadTotalCounter:            kvliteShadowReadTotalCounter,
-		KvliteCompareMismatchTotalCounter:       kvliteCompareMismatchTotalCounter,
-		KvliteCompareRepairTotalCounter:         kvliteCompareRepairTotalCounter,
-		FastPathHitTotalCounter:                 fastPathHitTotalCounter,
-		FastPathMissTotalCounter:                fastPathMissTotalCounter,
-		SummaryBypassedTotalCounter:             summaryBypassedTotalCounter,
-		MetaCacheHitTotalCounter:                metaCacheHitTotalCounter,
-		MetaCacheMissTotalCounter:               metaCacheMissTotalCounter,
-		MetaCacheRefreshTotalCounter:            metaCacheRefreshTotalCounter,
-		MetaCacheStaleTotalCounter:              metaCacheStaleTotalCounter,
-		RecentWindowCacheHitTotalCounter:        recentWindowCacheHitTotalCounter,
-		RecentWindowCacheMissTotalCounter:       recentWindowCacheMissTotalCounter,
-		RecentWindowCacheRefreshTotalCounter:    recentWindowCacheRefreshTotalCounter,
-		RecentWindowCacheStaleTotalCounter:      recentWindowCacheStaleTotalCounter,
-		LoadSessionMetaLatencyHistogram:         loadSessionMetaLatencyHistogram,
-		LoadRecentTurnsLatencyHistogram:         loadRecentTurnsLatencyHistogram,
-		HotSessionReadLatencyHistogram:          hotSessionReadLatencyHistogram,
-		HotSessionWriteThenReadLatencyHistogram: hotSessionWriteThenReadLatencyHistogram,
-		SummaryBuildLatencyHistogram:            summaryBuildLatencyHistogram,
-		SummaryBuildFailTotalCounter:            summaryBuildFailTotalCounter,
-		SummaryHitTotalCounter:                  summaryHitTotalCounter,
-		SummaryMissTotalCounter:                 summaryMissTotalCounter,
-		SummaryStaleTotalCounter:                summaryStaleTotalCounter,
-		SummaryTriggerTotalCounter:              summaryTriggerTotalCounter,
-		SummaryPromptTokensBeforeHistogram:      summaryPromptTokensBeforeHistogram,
-		SummaryPromptTokensAfterHistogram:       summaryPromptTokensAfterHistogram,
-		SummarySavedTokensHistogram:             summarySavedTokensHistogram,
+		QuestionsTotalCounter:                    questionsTotalCounter,
+		KeywordsQuestionsTotalCounter:            keywordsQuestionsTotalCounter,
+		SensitiveQuestionsTotalCounter:           sensitiveQuestionsTotalCounter,
+		ErrQuestionsTotalCounter:                 errQuestionsTotalCounter,
+		KvliteReadLatencyHistogram:               kvliteReadLatencyHistogram,
+		KvliteWriteLatencyHistogram:              kvliteWriteLatencyHistogram,
+		KvliteTimeoutTotalCounter:                kvliteTimeoutTotalCounter,
+		KvliteFallbackTotalCounter:               kvliteFallbackTotalCounter,
+		KvliteConnErrorTotalCounter:              kvliteConnErrorTotalCounter,
+		KvliteMetaRepairTotalCounter:             kvliteMetaRepairTotalCounter,
+		KvliteShadowReadTotalCounter:             kvliteShadowReadTotalCounter,
+		KvliteCompareMismatchTotalCounter:        kvliteCompareMismatchTotalCounter,
+		KvliteCompareRepairTotalCounter:          kvliteCompareRepairTotalCounter,
+		FastPathHitTotalCounter:                  fastPathHitTotalCounter,
+		FastPathMissTotalCounter:                 fastPathMissTotalCounter,
+		SummaryBypassedTotalCounter:              summaryBypassedTotalCounter,
+		MetaCacheHitTotalCounter:                 metaCacheHitTotalCounter,
+		MetaCacheMissTotalCounter:                metaCacheMissTotalCounter,
+		MetaCacheRefreshTotalCounter:             metaCacheRefreshTotalCounter,
+		MetaCacheStaleTotalCounter:               metaCacheStaleTotalCounter,
+		RecentWindowCacheHitTotalCounter:         recentWindowCacheHitTotalCounter,
+		RecentWindowCacheMissTotalCounter:        recentWindowCacheMissTotalCounter,
+		RecentWindowCacheRefreshTotalCounter:     recentWindowCacheRefreshTotalCounter,
+		RecentWindowCacheStaleTotalCounter:       recentWindowCacheStaleTotalCounter,
+		LoadSessionMetaLatencyHistogram:          loadSessionMetaLatencyHistogram,
+		LoadRecentTurnsLatencyHistogram:          loadRecentTurnsLatencyHistogram,
+		HotSessionReadLatencyHistogram:           hotSessionReadLatencyHistogram,
+		HotSessionWriteThenReadLatencyHistogram:  hotSessionWriteThenReadLatencyHistogram,
+		SummaryBuildLatencyHistogram:             summaryBuildLatencyHistogram,
+		SummaryBuildFailTotalCounter:             summaryBuildFailTotalCounter,
+		SummaryHitTotalCounter:                   summaryHitTotalCounter,
+		SummaryMissTotalCounter:                  summaryMissTotalCounter,
+		SummaryStaleTotalCounter:                 summaryStaleTotalCounter,
+		SummaryTriggerTotalCounter:               summaryTriggerTotalCounter,
+		SummaryPromptTokensBeforeHistogram:       summaryPromptTokensBeforeHistogram,
+		SummaryPromptTokensAfterHistogram:        summaryPromptTokensAfterHistogram,
+		SummarySavedTokensHistogram:              summarySavedTokensHistogram,
+		AnnShadowQueriesTotalCounter:             annShadowQueriesTotalCounter,
+		AnnShadowHitsTotalCounter:                annShadowHitsTotalCounter,
+		AnnShadowSameAsBruteforceTotalCounter:    annShadowSameAsBruteforceTotalCounter,
+		AnnShadowDiffTotalCounter:                annShadowDiffTotalCounter,
+		AnnShadowMissVsBruteforceHitTotalCounter: annShadowMissVsBruteforceHitTotalCounter,
+		AnnShadowHitVsBruteforceMissTotalCounter: annShadowHitVsBruteforceMissTotalCounter,
+		AnnShadowErrorsTotalCounter:              annShadowErrorsTotalCounter,
+		AnnShadowFallbackTotalCounter:            annShadowFallbackTotalCounter,
+		AnnShadowLatencyHistogram:                annShadowLatencyHistogram,
 	}
 }
 
@@ -596,5 +687,59 @@ func (m *BusMetrics) ObserveSummaryPromptTokensAfter(tokens int) {
 func (m *BusMetrics) ObserveSummarySavedTokens(tokens int) {
 	if m != nil && m.SummarySavedTokensHistogram != nil {
 		m.SummarySavedTokensHistogram.Observe(float64(tokens))
+	}
+}
+
+func (m *BusMetrics) ObserveAnnShadowLatency(duration time.Duration) {
+	if m != nil && m.AnnShadowLatencyHistogram != nil {
+		m.AnnShadowLatencyHistogram.Observe(duration.Seconds())
+	}
+}
+
+func (m *BusMetrics) IncAnnShadowQueriesCount() {
+	if m != nil && m.AnnShadowQueriesTotalCounter != nil {
+		m.AnnShadowQueriesTotalCounter.Inc()
+	}
+}
+
+func (m *BusMetrics) IncAnnShadowHitsCount() {
+	if m != nil && m.AnnShadowHitsTotalCounter != nil {
+		m.AnnShadowHitsTotalCounter.Inc()
+	}
+}
+
+func (m *BusMetrics) IncAnnShadowSameAsBruteforceCount() {
+	if m != nil && m.AnnShadowSameAsBruteforceTotalCounter != nil {
+		m.AnnShadowSameAsBruteforceTotalCounter.Inc()
+	}
+}
+
+func (m *BusMetrics) IncAnnShadowDiffCount() {
+	if m != nil && m.AnnShadowDiffTotalCounter != nil {
+		m.AnnShadowDiffTotalCounter.Inc()
+	}
+}
+
+func (m *BusMetrics) IncAnnShadowMissVsBruteforceHitCount() {
+	if m != nil && m.AnnShadowMissVsBruteforceHitTotalCounter != nil {
+		m.AnnShadowMissVsBruteforceHitTotalCounter.Inc()
+	}
+}
+
+func (m *BusMetrics) IncAnnShadowHitVsBruteforceMissCount() {
+	if m != nil && m.AnnShadowHitVsBruteforceMissTotalCounter != nil {
+		m.AnnShadowHitVsBruteforceMissTotalCounter.Inc()
+	}
+}
+
+func (m *BusMetrics) IncAnnShadowErrorsCount() {
+	if m != nil && m.AnnShadowErrorsTotalCounter != nil {
+		m.AnnShadowErrorsTotalCounter.Inc()
+	}
+}
+
+func (m *BusMetrics) IncAnnShadowFallbackCount() {
+	if m != nil && m.AnnShadowFallbackTotalCounter != nil {
+		m.AnnShadowFallbackTotalCounter.Inc()
 	}
 }

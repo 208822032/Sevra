@@ -59,6 +59,9 @@ data: {"id":"3bf6999f-fd0e-4c38-9a97-8bce59da1b87","object":"chat.completion.chu
 data: {"id":"3bf6999f-fd0e-4c38-9a97-8bce59da1b87","object":"chat.completion.chunk","created":1711613996,"model":"gpt-3.5-turbo-0301","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":"stop","content_filter_results":{"hate":{"filtered":false},"self_harm":{"filtered":false},"sexual":{"filtered":false},"violence":{"filtered":false}}}]}
 ```
 
+## Embeddings 请求
+`/v1/embeddings` 也可用，返回 OpenAI-compatible 的 embedding vectors。`ai-chat-service` 的 retrieval-eval provider 模式会直接调用这个接口。
+
 # 部署
 ## 镜像构建
 ``` 

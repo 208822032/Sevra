@@ -67,30 +67,38 @@ type ChatMessage struct {
 }
 
 type AnswerTrace struct {
-	AnswerMode         string         `json:"answer_mode"`
-	Provider           string         `json:"provider"`
-	Model              string         `json:"model"`
-	SelectedProvider   string         `json:"selected_provider,omitempty"`
-	SelectedModel      string         `json:"selected_model,omitempty"`
-	ActualProvider     string         `json:"actual_provider,omitempty"`
-	ActualModel        string         `json:"actual_model,omitempty"`
-	FallbackUsed       bool           `json:"fallback_used,omitempty"`
-	FallbackReason     string         `json:"fallback_reason,omitempty"`
-	UsedLocalRetrieval bool           `json:"used_local_retrieval"`
-	CacheHit           bool           `json:"cache_hit"`
-	QAHitType          string         `json:"qa_hit_type,omitempty"`
-	CandidateCount     int            `json:"candidate_count,omitempty"`
-	CandidateTopScore  float64        `json:"candidate_top_score,omitempty"`
-	CandidateSource    string         `json:"candidate_source,omitempty"`
-	SemanticCandidateCount int        `json:"semantic_candidate_count,omitempty"`
-	SemanticTopK           int        `json:"semantic_top_k,omitempty"`
-	SemanticTopScore       float64    `json:"semantic_top_score,omitempty"`
-	SemanticModel          string     `json:"semantic_model,omitempty"`
-	SemanticSource         string     `json:"semantic_source,omitempty"`
-	FinalAnswerSource  string         `json:"final_answer_source"`
-	GenerationProvider string         `json:"generation_provider,omitempty"`
-	GenerationModel    string         `json:"generation_model,omitempty"`
-	RetrievedHits      []RetrievalHit `json:"retrieved_hits,omitempty"`
+	AnswerMode                  string         `json:"answer_mode"`
+	Provider                    string         `json:"provider"`
+	Model                       string         `json:"model"`
+	SelectedProvider            string         `json:"selected_provider,omitempty"`
+	SelectedModel               string         `json:"selected_model,omitempty"`
+	ActualProvider              string         `json:"actual_provider,omitempty"`
+	ActualModel                 string         `json:"actual_model,omitempty"`
+	FallbackUsed                bool           `json:"fallback_used,omitempty"`
+	FallbackReason              string         `json:"fallback_reason,omitempty"`
+	AnswerSourceKind            string         `json:"answer_source_kind,omitempty"`
+	UsedLocalRetrieval          bool           `json:"used_local_retrieval"`
+	CacheHit                    bool           `json:"cache_hit"`
+	QAHitType                   string         `json:"qa_hit_type,omitempty"`
+	CandidateCount              int            `json:"candidate_count,omitempty"`
+	CandidateTopScore           float64        `json:"candidate_top_score,omitempty"`
+	CandidateSource             string         `json:"candidate_source,omitempty"`
+	SemanticCandidateCount      int            `json:"semantic_candidate_count,omitempty"`
+	SemanticTopK                int            `json:"semantic_top_k,omitempty"`
+	SemanticTopScore            float64        `json:"semantic_top_score,omitempty"`
+	SemanticModeRequested       string         `json:"semantic_mode_requested,omitempty"`
+	SemanticModeUsed            string         `json:"semantic_mode_used,omitempty"`
+	SemanticFallbackUsed        bool           `json:"semantic_fallback_used,omitempty"`
+	SemanticFallbackReason      string         `json:"semantic_fallback_reason,omitempty"`
+	SemanticLatencyMS           float64        `json:"semantic_latency_ms,omitempty"`
+	SemanticANNLatencyMS        float64        `json:"semantic_ann_latency_ms,omitempty"`
+	SemanticBruteForceLatencyMS float64        `json:"semantic_brute_force_latency_ms,omitempty"`
+	SemanticModel               string         `json:"semantic_model,omitempty"`
+	SemanticSource              string         `json:"semantic_source,omitempty"`
+	FinalAnswerSource           string         `json:"final_answer_source"`
+	GenerationProvider          string         `json:"generation_provider,omitempty"`
+	GenerationModel             string         `json:"generation_model,omitempty"`
+	RetrievedHits               []RetrievalHit `json:"retrieved_hits,omitempty"`
 }
 
 type RetrievalHit struct {
@@ -177,6 +185,7 @@ func (chat *ChatService) ChatProcess(ctx *gin.Context) {
 			SelectedModel:      selectedModel,
 			ActualProvider:     defaultProvider,
 			ActualModel:        defaultModel,
+			AnswerSourceKind:   "ai",
 			UsedLocalRetrieval: false,
 			CacheHit:           false,
 			FinalAnswerSource:  "llm",
@@ -371,6 +380,13 @@ func parseResponseMeta(md metadata.MD) *ResponseMeta {
 	if meta.Trace.FinalAnswerSource == "" {
 		meta.Trace.FinalAnswerSource = "llm"
 	}
+	if meta.Trace.AnswerSourceKind == "" {
+		if meta.Trace.CacheHit || strings.HasPrefix(meta.Trace.FinalAnswerSource, "qa_") || meta.Trace.FinalAnswerSource == "local_cache" {
+			meta.Trace.AnswerSourceKind = "cache"
+		} else {
+			meta.Trace.AnswerSourceKind = "ai"
+		}
+	}
 	if meta.Usage.UsageSource == "" {
 		meta.Usage.UsageSource = "estimated"
 	}
@@ -412,6 +428,9 @@ func mergeResponseMeta(result *ChatMessage, meta *ResponseMeta) {
 	if meta.Trace.FallbackReason != "" {
 		result.Trace.FallbackReason = meta.Trace.FallbackReason
 	}
+	if meta.Trace.AnswerSourceKind != "" {
+		result.Trace.AnswerSourceKind = meta.Trace.AnswerSourceKind
+	}
 	result.Trace.UsedLocalRetrieval = meta.Trace.UsedLocalRetrieval
 	result.Trace.CacheHit = meta.Trace.CacheHit
 	if meta.Trace.QAHitType != "" {
@@ -425,6 +444,25 @@ func mergeResponseMeta(result *ChatMessage, meta *ResponseMeta) {
 	result.Trace.SemanticCandidateCount = meta.Trace.SemanticCandidateCount
 	result.Trace.SemanticTopK = meta.Trace.SemanticTopK
 	result.Trace.SemanticTopScore = meta.Trace.SemanticTopScore
+	if meta.Trace.SemanticModeRequested != "" {
+		result.Trace.SemanticModeRequested = meta.Trace.SemanticModeRequested
+	}
+	if meta.Trace.SemanticModeUsed != "" {
+		result.Trace.SemanticModeUsed = meta.Trace.SemanticModeUsed
+	}
+	result.Trace.SemanticFallbackUsed = meta.Trace.SemanticFallbackUsed
+	if meta.Trace.SemanticFallbackReason != "" {
+		result.Trace.SemanticFallbackReason = meta.Trace.SemanticFallbackReason
+	}
+	if meta.Trace.SemanticLatencyMS != 0 {
+		result.Trace.SemanticLatencyMS = meta.Trace.SemanticLatencyMS
+	}
+	if meta.Trace.SemanticANNLatencyMS != 0 {
+		result.Trace.SemanticANNLatencyMS = meta.Trace.SemanticANNLatencyMS
+	}
+	if meta.Trace.SemanticBruteForceLatencyMS != 0 {
+		result.Trace.SemanticBruteForceLatencyMS = meta.Trace.SemanticBruteForceLatencyMS
+	}
 	if meta.Trace.SemanticModel != "" {
 		result.Trace.SemanticModel = meta.Trace.SemanticModel
 	}
@@ -446,6 +484,9 @@ func mergeResponseMeta(result *ChatMessage, meta *ResponseMeta) {
 	if meta.Usage.TotalTokens > 0 || meta.Budget.MaxContextTokens > 0 {
 		result.Usage = &meta.Usage
 		result.Budget = &meta.Budget
+	}
+	if meta.Usage.TotalTokens > 0 {
+		result.TokenCount = meta.Usage.TotalTokens
 	}
 	if result.Usage == nil {
 		result.Usage = &UsageInfo{}

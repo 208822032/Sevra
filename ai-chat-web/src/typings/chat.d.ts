@@ -106,8 +106,22 @@ declare namespace Chat {
 		actualModel?: string
 		fallbackUsed?: boolean
 		fallbackReason?: string
+		answerSourceKind?: 'cache' | 'ai'
 		usedLocalRetrieval: boolean
 		cacheHit: boolean
+		qaHitType?: string
+		semanticCandidateCount?: number
+		semanticTopK?: number
+		semanticTopScore?: number
+		semanticModeRequested?: string
+		semanticModeUsed?: string
+		semanticFallbackUsed?: boolean
+		semanticFallbackReason?: string
+		semanticLatencyMS?: number
+		semanticANNLatencyMS?: number
+		semanticBruteForceLatencyMS?: number
+		semanticModel?: string
+		semanticSource?: string
 		finalAnswerSource: string
 		generationProvider?: string
 		generationModel?: string

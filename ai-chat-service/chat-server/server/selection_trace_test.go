@@ -4,6 +4,7 @@ import (
 	"ai-chat-service/chat-server/data"
 	"ai-chat-service/chat-server/llm"
 	"ai-chat-service/chat-server/provider"
+	"ai-chat-service/chat-server/qa"
 	vector_data "ai-chat-service/chat-server/vector-data"
 	serviceconfig "ai-chat-service/pkg/config"
 	bklog "ai-chat-service/pkg/log"
@@ -76,6 +77,16 @@ func TestBuildAnswerTraceIncludesSelectedAndActualModels(t *testing.T) {
 		selectedModel:    "deepseek-reasoner",
 		fallbackUsed:     true,
 		fallbackReason:   "invalid_model_for_provider",
+		qaLookupResult: qa.LookupResult{
+			SemanticModeRequested:       qa.SemanticRecallModeANN,
+			SemanticModeUsed:            qa.SemanticRecallModeBruteForce,
+			SemanticFallbackUsed:        true,
+			SemanticFallbackReason:      "ann_query_error",
+			SemanticLatencyMS:           12.5,
+			SemanticANNLatencyMS:        4.2,
+			SemanticBruteForceLatencyMS: 8.3,
+			SemanticSource:              qa.SemanticRecallSourceANNFallback,
+		},
 	}
 	decision := llm.RouteDecision{
 		Mode: llm.AnswerModeCacheHit,
@@ -86,7 +97,7 @@ func TestBuildAnswerTraceIncludesSelectedAndActualModels(t *testing.T) {
 		}},
 	}
 
-	trace := app.buildAnswerTrace(decision, llm.FinalAnswerSourceLocal, true, true)
+	trace := app.buildAnswerTrace(decision, llm.FinalAnswerSourceLocal, true, true, "cached local answer")
 	if trace.SelectedProvider != "deepseek" || trace.SelectedModel != "deepseek-reasoner" {
 		t.Fatalf("unexpected selected trace fields: %+v", trace)
 	}
@@ -98,6 +109,21 @@ func TestBuildAnswerTraceIncludesSelectedAndActualModels(t *testing.T) {
 	}
 	if trace.FinalAnswerSource != llm.FinalAnswerSourceLocal {
 		t.Fatalf("unexpected final answer source: %+v", trace)
+	}
+	if trace.AnswerSourceKind != llm.AnswerSourceKindCache {
+		t.Fatalf("unexpected answer source kind: %+v", trace)
+	}
+	if trace.SemanticModeRequested != qa.SemanticRecallModeANN || trace.SemanticModeUsed != qa.SemanticRecallModeBruteForce {
+		t.Fatalf("unexpected semantic trace fields: %+v", trace)
+	}
+	if !trace.SemanticFallbackUsed || trace.SemanticFallbackReason != "ann_query_error" {
+		t.Fatalf("unexpected semantic fallback trace fields: %+v", trace)
+	}
+	if trace.SemanticSource != qa.SemanticRecallSourceANNFallback {
+		t.Fatalf("unexpected semantic source trace field: %+v", trace)
+	}
+	if trace.SemanticLatencyMS != 12.5 || trace.SemanticANNLatencyMS != 4.2 || trace.SemanticBruteForceLatencyMS != 8.3 {
+		t.Fatalf("unexpected semantic latency trace fields: %+v", trace)
 	}
 	if !trace.CacheHit || !trace.UsedLocalRetrieval {
 		t.Fatalf("unexpected cache or retrieval flags: %+v", trace)

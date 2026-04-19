@@ -1,0 +1,145 @@
+{
+  "name": "ai-chat retrieval quality suite",
+  "version": "v1",
+  "description": "Stable retrieval evaluation suite for exact, normalized, alias, candidate, semantic, and hard-negative analysis.",
+  "default_scope": {
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "prompt_version": "v1"
+  },
+  "seeds": [
+    {
+      "id": "qa-reset-cache",
+      "question": "How do I reset the cache safely?",
+      "answer": "reset-cache",
+      "aliases": [
+        "How do I keep the cache canonical?"
+      ],
+      "tags": ["exact", "normalized", "semantic"]
+    },
+    {
+      "id": "qa-clear-redis-cache",
+      "question": "How do I clear the Redis cache safely?",
+      "answer": "clear-cache",
+      "tags": ["candidate"]
+    },
+    {
+      "id": "qa-flush-redis-cache",
+      "question": "How do I flush the Redis cache safely?",
+      "answer": "flush-cache",
+      "tags": ["candidate"]
+    },
+    {
+      "id": "qa-canonical-answer",
+      "question": "How do I keep the canonical answer?",
+      "answer": "canonical answer",
+      "aliases": [
+        "How do I keep the answer canonical?",
+        "How do I keep canonical answers?"
+      ],
+      "tags": ["alias"]
+    },
+    {
+      "id": "qa-trace-fields",
+      "question": "How do I inspect semantic trace fields?",
+      "answer": "trace-fields",
+      "tags": ["semantic"]
+    },
+    {
+      "id": "qa-backfill",
+      "question": "How do I enable async backfill?",
+      "answer": "backfill-on",
+      "tags": ["semantic"]
+    }
+  ],
+  "cases": [
+    {
+      "id": "exact-reset-cache",
+      "query": "How do I reset the cache safely?",
+      "expected_behavior": "hit",
+      "expected_layer": "exact",
+      "expected_answer_id": "qa-reset-cache",
+      "tags": ["exact"]
+    },
+    {
+      "id": "normalized-reset-cache",
+      "query": "  HOW DO I RESET THE CACHE SAFELY!!!  ",
+      "expected_behavior": "hit",
+      "expected_layer": "normalized",
+      "expected_answer_id": "qa-reset-cache",
+      "tags": ["normalized"]
+    },
+    {
+      "id": "alias-canonical-answer",
+      "query": "How do I keep the answer canonical?",
+      "expected_behavior": "hit",
+      "expected_layer": "alias",
+      "expected_answer_id": "qa-canonical-answer",
+      "tags": ["alias"]
+    },
+    {
+      "id": "candidate-clear-cache",
+      "query": "How can I safely clear Redis cache?",
+      "expected_behavior": "hit",
+      "expected_layer": "candidate",
+      "expected_answer_id": "qa-clear-redis-cache",
+      "tags": ["candidate"]
+    },
+    {
+      "id": "candidate-flush-cache",
+      "query": "How do I flush Redis cache without downtime?",
+      "expected_behavior": "hit",
+      "expected_layer": "candidate",
+      "expected_answer_id": "qa-flush-redis-cache",
+      "tags": ["candidate"]
+    },
+    {
+      "id": "semantic-probe-refresh-stale-cache",
+      "query": "How do I preserve stale cache answers during deployment?",
+      "expected_behavior": "hit",
+      "expected_layer": "semantic",
+      "expected_answer_id": "qa-reset-cache",
+      "tags": ["semantic_probe"]
+    },
+    {
+      "id": "hard-negative-gpu-training",
+      "query": "How do I provision GPU clusters for training?",
+      "expected_behavior": "miss",
+      "expected_layer": "miss",
+      "tags": ["hard_negative"]
+    },
+    {
+      "id": "hard-negative-cache-gpu",
+      "query": "How do I clear the Redis cache before a GPU training job?",
+      "expected_behavior": "miss",
+      "expected_layer": "miss",
+      "tags": ["hard_negative", "wrong_hit_probe"]
+    }
+  ],
+  "parameter_sets": [
+    {
+      "name": "baseline",
+      "candidate_top_k": 6,
+      "candidate_score_threshold": 0.62,
+      "semantic_top_k": 4,
+      "semantic_score_threshold": 0.75,
+      "semantic_corpus_limit": 32
+    },
+    {
+      "name": "tight_candidate",
+      "candidate_top_k": 4,
+      "candidate_score_threshold": 0.70,
+      "semantic_top_k": 4,
+      "semantic_score_threshold": 0.80,
+      "semantic_corpus_limit": 16
+    },
+    {
+      "name": "semantic_wide",
+      "candidate_top_k": 6,
+      "candidate_score_threshold": 0.62,
+      "semantic_top_k": 6,
+      "semantic_score_threshold": 0.70,
+      "semantic_corpus_limit": 64
+    }
+  ]
+}

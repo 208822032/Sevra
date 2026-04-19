@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"strings"
 
@@ -37,13 +38,22 @@ type Config struct {
 	Providers []provider.ProviderProfile `mapstructure:"providers"`
 	Retrieval struct {
 		Semantic struct {
-			Enabled        bool    `mapstructure:"enabled"`
-			TopK           int     `mapstructure:"top_k"`
-			Threshold      float64 `mapstructure:"threshold"`
-			CorpusLimit    int     `mapstructure:"corpus_limit"`
-			EmbeddingModel string  `mapstructure:"embedding_model"`
-			EmbeddingDim   int     `mapstructure:"embedding_dim"`
-			AsyncBackfill  bool    `mapstructure:"async_backfill"`
+			Enabled          bool    `mapstructure:"enabled"`
+			Mode             string  `mapstructure:"mode"`
+			TopK             int     `mapstructure:"top_k"`
+			Threshold        float64 `mapstructure:"threshold"`
+			CorpusLimit      int     `mapstructure:"corpus_limit"`
+			EmbeddingModel   string  `mapstructure:"embedding_model"`
+			EmbeddingProfile string  `mapstructure:"embedding_profile"`
+			EmbeddingDim     int     `mapstructure:"embedding_dim"`
+			AsyncBackfill    bool    `mapstructure:"async_backfill"`
+			ShadowANN        struct {
+				Enabled        bool    `mapstructure:"enabled"`
+				TopK           int     `mapstructure:"top_k"`
+				ScoreThreshold float64 `mapstructure:"score_threshold"`
+				LogDiffOnly    bool    `mapstructure:"log_diff_only"`
+				SampleRate     float64 `mapstructure:"sample_rate"`
+			} `mapstructure:"shadow_ann"`
 		} `mapstructure:"semantic"`
 	} `mapstructure:"retrieval"`
 	Context struct {
@@ -101,23 +111,42 @@ type Config struct {
 
 var conf *Config
 
-func InitConfig(filePath string, typ ...string) {
+func LoadConfig(filePath string, typ ...string) (*Config, error) {
 	v := viper.New()
 	v.SetDefault("retrieval.semantic.async_backfill", true)
+	v.SetDefault("retrieval.semantic.mode", "brute_force")
+	v.SetDefault("retrieval.semantic.shadow_ann.enabled", false)
+	v.SetDefault("retrieval.semantic.shadow_ann.top_k", 4)
+	v.SetDefault("retrieval.semantic.shadow_ann.score_threshold", 0.8)
+	v.SetDefault("retrieval.semantic.shadow_ann.log_diff_only", true)
+	v.SetDefault("retrieval.semantic.shadow_ann.sample_rate", 1.0)
 	v.SetConfigFile(filePath)
 	if len(typ) > 0 {
 		v.SetConfigType(typ[0])
 	}
 	err := v.ReadInConfig()
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	conf = &Config{}
-	err = v.Unmarshal(conf)
+	cfg := &Config{}
+	err = v.Unmarshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	normalizedMode, err := normalizeRetrievalSemanticMode(cfg.Retrieval.Semantic.Mode)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Retrieval.Semantic.Mode = normalizedMode
+	return cfg, nil
+}
+
+func InitConfig(filePath string, typ ...string) {
+	cfg, err := LoadConfig(filePath, typ...)
 	if err != nil {
 		log.Fatal(err)
 	}
-
+	conf = cfg
 }
 
 func GetConfig() *Config {
@@ -165,4 +194,15 @@ func providerNameFromModel(model string) string {
 		return "deepseek"
 	}
 	return "openai"
+}
+
+func normalizeRetrievalSemanticMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "brute_force":
+		return "brute_force", nil
+	case "ann":
+		return "ann", nil
+	default:
+		return "", fmt.Errorf("unsupported retrieval.semantic.mode %q; expected brute_force or ann", mode)
+	}
 }

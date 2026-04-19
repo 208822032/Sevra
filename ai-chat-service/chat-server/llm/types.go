@@ -27,6 +27,9 @@ const (
 	FinalAnswerSourceQACandidate = "qa_candidate"
 	FinalAnswerSourceQASemantic  = "qa_semantic"
 
+	AnswerSourceKindCache = "cache"
+	AnswerSourceKindAI    = "ai"
+
 	UsageSourceProvider  = "provider"
 	UsageSourceEstimated = "estimated"
 
@@ -152,6 +155,25 @@ type UsageInfo struct {
 	UsageSource      string `json:"usage_source"`
 }
 
+type SemanticShadowTrace struct {
+	ShadowSemanticEnabled      bool           `json:"ann_shadow_enabled,omitempty"`
+	ShadowSemanticHit          bool           `json:"ann_shadow_hit,omitempty"`
+	ShadowSemanticLayer        string         `json:"ann_shadow_layer,omitempty"`
+	ShadowSemanticAnswer       string         `json:"ann_shadow_answer,omitempty"`
+	ShadowSemanticAnswerID     string         `json:"ann_shadow_answer_id,omitempty"`
+	ShadowSemanticTopScore     float64        `json:"ann_shadow_top_score,omitempty"`
+	ShadowSemanticTopK         int            `json:"ann_shadow_top_k,omitempty"`
+	ShadowSemanticLatencyMS    float64        `json:"ann_shadow_latency_ms,omitempty"`
+	ShadowSemanticIndexSource  string         `json:"ann_shadow_index_source,omitempty"`
+	ShadowSemanticIndexVersion string         `json:"ann_shadow_index_version,omitempty"`
+	ShadowSemanticSameTop1     bool           `json:"ann_vs_bruteforce_same_top1,omitempty"`
+	ShadowSemanticSameAsFinal  bool           `json:"ann_vs_final_answer_same,omitempty"`
+	ShadowSemanticError        string         `json:"ann_shadow_error,omitempty"`
+	ShadowSemanticFallbackUsed bool           `json:"ann_shadow_fallback_used,omitempty"`
+	ShadowSemanticDiffCategory string         `json:"ann_shadow_diff_category,omitempty"`
+	ShadowSemanticTopHits      []RetrievalHit `json:"ann_shadow_top_hits,omitempty"`
+}
+
 type BudgetInfo struct {
 	MaxContextTokens                int    `json:"max_context_tokens"`
 	ReservedCompletionTokens        int    `json:"reserved_completion_tokens"`
@@ -160,30 +182,39 @@ type BudgetInfo struct {
 }
 
 type AnswerTrace struct {
-	AnswerMode             string         `json:"answer_mode"`
-	Provider               string         `json:"provider"`
-	Model                  string         `json:"model"`
-	SelectedProvider       string         `json:"selected_provider,omitempty"`
-	SelectedModel          string         `json:"selected_model,omitempty"`
-	ActualProvider         string         `json:"actual_provider,omitempty"`
-	ActualModel            string         `json:"actual_model,omitempty"`
-	FallbackUsed           bool           `json:"fallback_used,omitempty"`
-	FallbackReason         string         `json:"fallback_reason,omitempty"`
-	UsedLocalRetrieval     bool           `json:"used_local_retrieval"`
-	CacheHit               bool           `json:"cache_hit"`
-	QAHitType              string         `json:"qa_hit_type,omitempty"`
-	CandidateCount         int            `json:"candidate_count,omitempty"`
-	CandidateTopScore      float64        `json:"candidate_top_score,omitempty"`
-	CandidateSource        string         `json:"candidate_source,omitempty"`
-	SemanticCandidateCount int            `json:"semantic_candidate_count,omitempty"`
-	SemanticTopK           int            `json:"semantic_top_k,omitempty"`
-	SemanticTopScore       float64        `json:"semantic_top_score,omitempty"`
-	SemanticModel          string         `json:"semantic_model,omitempty"`
-	SemanticSource         string         `json:"semantic_source,omitempty"`
-	FinalAnswerSource      string         `json:"final_answer_source"`
-	GenerationProvider     string         `json:"generation_provider,omitempty"`
-	GenerationModel        string         `json:"generation_model,omitempty"`
-	RetrievedHits          []RetrievalHit `json:"retrieved_hits,omitempty"`
+	SemanticShadowTrace
+	AnswerMode                  string         `json:"answer_mode"`
+	Provider                    string         `json:"provider"`
+	Model                       string         `json:"model"`
+	SelectedProvider            string         `json:"selected_provider,omitempty"`
+	SelectedModel               string         `json:"selected_model,omitempty"`
+	ActualProvider              string         `json:"actual_provider,omitempty"`
+	ActualModel                 string         `json:"actual_model,omitempty"`
+	FallbackUsed                bool           `json:"fallback_used,omitempty"`
+	FallbackReason              string         `json:"fallback_reason,omitempty"`
+	AnswerSourceKind            string         `json:"answer_source_kind,omitempty"`
+	UsedLocalRetrieval          bool           `json:"used_local_retrieval"`
+	CacheHit                    bool           `json:"cache_hit"`
+	QAHitType                   string         `json:"qa_hit_type,omitempty"`
+	CandidateCount              int            `json:"candidate_count,omitempty"`
+	CandidateTopScore           float64        `json:"candidate_top_score,omitempty"`
+	CandidateSource             string         `json:"candidate_source,omitempty"`
+	SemanticCandidateCount      int            `json:"semantic_candidate_count,omitempty"`
+	SemanticTopK                int            `json:"semantic_top_k,omitempty"`
+	SemanticTopScore            float64        `json:"semantic_top_score,omitempty"`
+	SemanticModel               string         `json:"semantic_model,omitempty"`
+	SemanticSource              string         `json:"semantic_source,omitempty"`
+	SemanticModeRequested       string         `json:"semantic_mode_requested,omitempty"`
+	SemanticModeUsed            string         `json:"semantic_mode_used,omitempty"`
+	SemanticFallbackUsed        bool           `json:"semantic_fallback_used,omitempty"`
+	SemanticFallbackReason      string         `json:"semantic_fallback_reason,omitempty"`
+	SemanticLatencyMS           float64        `json:"semantic_latency_ms,omitempty"`
+	SemanticANNLatencyMS        float64        `json:"semantic_ann_latency_ms,omitempty"`
+	SemanticBruteForceLatencyMS float64        `json:"semantic_bruteforce_latency_ms,omitempty"`
+	FinalAnswerSource           string         `json:"final_answer_source"`
+	GenerationProvider          string         `json:"generation_provider,omitempty"`
+	GenerationModel             string         `json:"generation_model,omitempty"`
+	RetrievedHits               []RetrievalHit `json:"retrieved_hits,omitempty"`
 }
 
 type ResponseMeta struct {

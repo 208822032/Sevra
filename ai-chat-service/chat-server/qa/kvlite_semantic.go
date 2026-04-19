@@ -206,6 +206,7 @@ func (s *KVLiteStore) BackfillSemanticEmbedding(ctx context.Context, record *llm
 	if err := s.upsertSemanticScopeIndex(ctx, stored.Scope, questionID, writeTTL); err != nil {
 		return err
 	}
+	s.invalidateSemanticANNIndex(stored.Scope)
 	return nil
 }
 
@@ -215,6 +216,182 @@ func (s *KVLiteStore) lookupBySemantic(ctx context.Context, req LookupRequest) (
 	}
 	queryQuestion := firstNonEmpty(req.Question, req.NormalizedQuestion)
 	if strings.TrimSpace(queryQuestion) == "" {
+		return LookupResult{Hit: false}, false, nil
+	}
+	provider := s.semanticProvider
+	if provider == nil {
+		return LookupResult{Hit: false}, false, nil
+	}
+	queryVectors, err := provider.Embed(ctx, []string{queryQuestion})
+	if err != nil {
+		return LookupResult{}, false, err
+	}
+	if len(queryVectors) == 0 || len(queryVectors[0]) == 0 {
+		return LookupResult{Hit: false}, false, nil
+	}
+	return s.lookupBySemanticWithVector(ctx, req, queryVectors[0])
+}
+
+func (s *KVLiteStore) lookupBySemanticWithVector(ctx context.Context, req LookupRequest, queryVector []float32) (LookupResult, bool, error) {
+	mode := normalizeSemanticMode(req.SemanticMode)
+	if mode == SemanticRecallModeANN {
+		result, hit, err := s.lookupBySemanticANNWithVector(ctx, req, queryVector)
+		return result, hit, err
+	}
+	start := time.Now()
+	result, hit, err := s.lookupBySemanticBruteForceWithVector(ctx, req, queryVector)
+	if err != nil {
+		return result, hit, err
+	}
+	applySemanticLookupOutcome(&result, SemanticRecallModeBruteForce, SemanticRecallModeBruteForce, false, "", SemanticRecallSourceBruteForce, 0, time.Since(start), time.Since(start))
+	result.SemanticShadowTrace = s.lookupBySemanticANNShadowWithVector(ctx, req, queryVector, result)
+	return result, hit, nil
+}
+
+func applySemanticLookupOutcome(result *LookupResult, requestedMode, usedMode string, fallbackUsed bool, fallbackReason string, semanticSource string, annLatency, bruteForceLatency, totalLatency time.Duration) {
+	if result == nil {
+		return
+	}
+	requestedMode = normalizeSemanticMode(requestedMode)
+	usedMode = normalizeSemanticMode(usedMode)
+	if requestedMode == "" {
+		requestedMode = usedMode
+	}
+	if usedMode == "" {
+		usedMode = requestedMode
+	}
+	if totalLatency <= 0 {
+		totalLatency = annLatency + bruteForceLatency
+	}
+	if result.Metadata == nil {
+		result.Metadata = map[string]string{}
+	}
+	result.SemanticModeRequested = requestedMode
+	result.SemanticModeUsed = usedMode
+	result.SemanticFallbackUsed = fallbackUsed
+	result.SemanticFallbackReason = strings.TrimSpace(fallbackReason)
+	result.SemanticLatencyMS = float64(totalLatency) / float64(time.Millisecond)
+	result.SemanticANNLatencyMS = float64(annLatency) / float64(time.Millisecond)
+	result.SemanticBruteForceLatencyMS = float64(bruteForceLatency) / float64(time.Millisecond)
+	if semanticSource != "" {
+		result.SemanticSource = semanticSource
+	}
+	result.Metadata["semantic_mode_requested"] = requestedMode
+	result.Metadata["semantic_mode_used"] = usedMode
+	result.Metadata["semantic_fallback_used"] = fmt.Sprintf("%t", fallbackUsed)
+	if strings.TrimSpace(fallbackReason) != "" {
+		result.Metadata["semantic_fallback_reason"] = fallbackReason
+	} else {
+		delete(result.Metadata, "semantic_fallback_reason")
+	}
+	result.Metadata["semantic_latency_ms"] = fmt.Sprintf("%.3f", result.SemanticLatencyMS)
+	result.Metadata["semantic_ann_latency_ms"] = fmt.Sprintf("%.3f", result.SemanticANNLatencyMS)
+	result.Metadata["semantic_bruteforce_latency_ms"] = fmt.Sprintf("%.3f", result.SemanticBruteForceLatencyMS)
+	result.Metadata["semantic_mode"] = usedMode
+	if semanticSource != "" {
+		result.Metadata["semantic_source"] = semanticSource
+	}
+}
+
+func (s *KVLiteStore) lookupBySemanticANNWithVector(ctx context.Context, req LookupRequest, queryVector []float32) (LookupResult, bool, error) {
+	requestedMode := normalizeSemanticMode(req.SemanticMode)
+	if requestedMode != SemanticRecallModeANN {
+		requestedMode = SemanticRecallModeANN
+	}
+	annStart := time.Now()
+	annResult, annHit, shouldFallback, fallbackReason, annErr := s.lookupBySemanticANNDirectWithVector(ctx, req, queryVector)
+	annLatency := time.Since(annStart)
+	if !shouldFallback && annErr == nil {
+		applySemanticLookupOutcome(&annResult, requestedMode, SemanticRecallModeANN, false, "", SemanticRecallSourceANNBucketedLSH, annLatency, 0, annLatency)
+		return annResult, annHit, nil
+	}
+	bruteForceStart := time.Now()
+	bruteForceResult, bruteForceHit, bruteForceErr := s.lookupBySemanticBruteForceWithVector(ctx, req, queryVector)
+	bruteForceLatency := time.Since(bruteForceStart)
+	totalLatency := annLatency + bruteForceLatency
+	if bruteForceErr != nil {
+		applySemanticLookupOutcome(&bruteForceResult, requestedMode, SemanticRecallModeBruteForce, true, fallbackReason, semanticANNFallbackSource, annLatency, bruteForceLatency, totalLatency)
+		return bruteForceResult, bruteForceHit, bruteForceErr
+	}
+	applySemanticLookupOutcome(&bruteForceResult, requestedMode, SemanticRecallModeBruteForce, true, fallbackReason, semanticANNFallbackSource, annLatency, bruteForceLatency, totalLatency)
+	if annErr != nil {
+		return bruteForceResult, bruteForceHit, nil
+	}
+	return bruteForceResult, bruteForceHit, nil
+}
+
+func (s *KVLiteStore) lookupBySemanticANNDirectWithVector(ctx context.Context, req LookupRequest, queryVector []float32) (LookupResult, bool, bool, string, error) {
+	if s == nil || s.backend == nil || !s.semanticEnabled {
+		return LookupResult{Hit: false}, false, false, "", nil
+	}
+	if len(queryVector) == 0 {
+		return LookupResult{Hit: false}, false, true, "ann_query_vector_empty", nil
+	}
+	scope := effectiveLookupScope(req)
+	topK := req.SemanticTopK
+	if topK <= 0 {
+		topK = s.semanticTopK
+	}
+	if topK <= 0 {
+		topK = DefaultSemanticTopK
+	}
+	threshold := req.SemanticThreshold
+	if threshold <= 0 {
+		threshold = s.semanticThreshold
+	}
+	if threshold <= 0 {
+		threshold = DefaultSemanticMinScore
+	}
+	corpusLimit := req.SemanticCorpusLimit
+	if corpusLimit <= 0 {
+		corpusLimit = s.semanticCorpusLimit
+	}
+	if corpusLimit <= 0 {
+		corpusLimit = DefaultSemanticCorpusLimit
+	}
+	index, err := s.ensureSemanticANNIndex(ctx, scope, corpusLimit)
+	if err != nil {
+		return LookupResult{}, false, true, fmt.Sprintf("ann_index_load_error: %v", err), err
+	}
+	if index == nil || len(index.Entries) == 0 {
+		return LookupResult{Hit: false}, false, true, "ann_index_missing", nil
+	}
+	best, candidateCount, ok, queryErr := index.bestMatch(queryVector)
+	if queryErr != nil {
+		return LookupResult{}, false, true, fmt.Sprintf("ann_query_error: %v", queryErr), queryErr
+	}
+	if !ok || best.Record == nil {
+		return LookupResult{Hit: false}, false, true, "ann_no_result", nil
+	}
+	if best.Score < threshold {
+		return LookupResult{Hit: false}, false, true, "ann_low_score", nil
+	}
+	result := lookupResultFromRecord(best.Record)
+	result.Hit = true
+	result.HitType = HitTypeSemantic
+	result.SemanticCandidateCount = candidateCount
+	result.SemanticTopK = topK
+	result.SemanticTopScore = best.Score
+	result.SemanticModel = firstNonEmpty(best.Model, s.semanticModel, best.Record.EmbeddingModel)
+	result.SemanticSource = SemanticRecallSourceANNBucketedLSH
+	if result.Metadata == nil {
+		result.Metadata = map[string]string{}
+	}
+	result.Metadata["hit_type"] = HitTypeSemantic
+	result.Metadata["semantic_mode"] = SemanticRecallModeANN
+	result.Metadata["semantic_candidate_count"] = fmt.Sprintf("%d", candidateCount)
+	result.Metadata["semantic_top_k"] = fmt.Sprintf("%d", topK)
+	result.Metadata["semantic_top_score"] = fmt.Sprintf("%.4f", best.Score)
+	result.Metadata["semantic_model"] = result.SemanticModel
+	result.Metadata["semantic_source"] = SemanticRecallSourceANNBucketedLSH
+	return result, true, false, "", nil
+}
+
+func (s *KVLiteStore) lookupBySemanticBruteForceWithVector(ctx context.Context, req LookupRequest, queryVector []float32) (LookupResult, bool, error) {
+	if s == nil || s.backend == nil || !s.semanticEnabled {
+		return LookupResult{Hit: false}, false, nil
+	}
+	if len(queryVector) == 0 {
 		return LookupResult{Hit: false}, false, nil
 	}
 	scope := effectiveLookupScope(req)
@@ -239,18 +416,6 @@ func (s *KVLiteStore) lookupBySemantic(ctx context.Context, req LookupRequest) (
 	if corpusLimit <= 0 {
 		corpusLimit = DefaultSemanticCorpusLimit
 	}
-	provider := s.semanticProvider
-	if provider == nil {
-		return LookupResult{Hit: false}, false, nil
-	}
-	queryVectors, err := provider.Embed(ctx, []string{queryQuestion})
-	if err != nil {
-		return LookupResult{}, false, err
-	}
-	if len(queryVectors) == 0 || len(queryVectors[0]) == 0 {
-		return LookupResult{Hit: false}, false, nil
-	}
-	queryVector := queryVectors[0]
 	payload, err := s.backend.RGet(ctx, s.semanticScopeIndexKey(scope))
 	if err != nil {
 		return LookupResult{}, false, err
@@ -262,15 +427,14 @@ func (s *KVLiteStore) lookupBySemantic(ctx context.Context, req LookupRequest) (
 	if len(candidateIDs) == 0 {
 		return LookupResult{Hit: false}, false, nil
 	}
-	if corpusLimit > 0 && len(candidateIDs) > corpusLimit {
+	if len(candidateIDs) > corpusLimit {
 		candidateIDs = candidateIDs[:corpusLimit]
 	}
 	type semanticHit struct {
-		id        string
-		record    *llm.QARecord
-		score     float64
-		model     string
-		embedding semanticEmbeddingPayload
+		id     string
+		record *llm.QARecord
+		score  float64
+		model  string
 	}
 	matches := make([]semanticHit, 0, len(candidateIDs))
 	for _, questionID := range candidateIDs {
@@ -290,25 +454,20 @@ func (s *KVLiteStore) lookupBySemantic(ctx context.Context, req LookupRequest) (
 			continue
 		}
 		embeddingPayload, err := decodeSemanticEmbeddingPayload(vectorPayload)
-		if err != nil {
-			continue
-		}
-		if len(embeddingPayload.Vector) == 0 {
+		if err != nil || len(embeddingPayload.Vector) == 0 {
 			continue
 		}
 		score := cosineSimilarity(queryVector, embeddingPayload.Vector)
 		matches = append(matches, semanticHit{
-			id:        questionID,
-			record:    record,
-			score:     score,
-			model:     embeddingPayload.Model,
-			embedding: embeddingPayload,
+			id:     questionID,
+			record: record,
+			score:  score,
+			model:  embeddingPayload.Model,
 		})
 	}
 	if len(matches) == 0 {
 		return LookupResult{Hit: false}, false, nil
 	}
-	// Sort descending by similarity and keep the requested topK for observability.
 	for i := 0; i < len(matches)-1; i++ {
 		for j := i + 1; j < len(matches); j++ {
 			if matches[j].score > matches[i].score || (matches[j].score == matches[i].score && matches[j].id < matches[i].id) {
@@ -332,6 +491,7 @@ func (s *KVLiteStore) lookupBySemantic(ctx context.Context, req LookupRequest) (
 		result.Metadata = map[string]string{}
 	}
 	result.Metadata["hit_type"] = HitTypeSemantic
+	result.Metadata["semantic_mode"] = SemanticRecallModeBruteForce
 	result.Metadata["semantic_candidate_count"] = fmt.Sprintf("%d", len(candidateIDs))
 	result.Metadata["semantic_top_k"] = fmt.Sprintf("%d", topK)
 	result.Metadata["semantic_top_score"] = fmt.Sprintf("%.4f", best.score)

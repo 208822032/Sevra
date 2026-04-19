@@ -305,15 +305,22 @@ func TestQAPreflightCandidateResponseBuildsCandidateTrace(t *testing.T) {
 
 func TestQAPreflightSemanticResponseBuildsSemanticTrace(t *testing.T) {
 	result := qa.LookupResult{
-		Hit:                    true,
-		HitType:                qa.HitTypeSemantic,
-		Answer:                 "semantic answer",
-		QuestionID:             "semantic-1",
-		SemanticCandidateCount: 4,
-		SemanticTopK:           3,
-		SemanticTopScore:       0.93,
-		SemanticModel:          "text-embedding-ada-002",
-		SemanticSource:         qa.SemanticRecallSourceBruteForce,
+		Hit:                         true,
+		HitType:                     qa.HitTypeSemantic,
+		Answer:                      "semantic answer",
+		QuestionID:                  "semantic-1",
+		SemanticCandidateCount:      4,
+		SemanticTopK:                3,
+		SemanticTopScore:            0.93,
+		SemanticModel:               "text-embedding-ada-002",
+		SemanticSource:              qa.SemanticRecallSourceBruteForce,
+		SemanticModeRequested:       qa.SemanticRecallModeANN,
+		SemanticModeUsed:            qa.SemanticRecallModeBruteForce,
+		SemanticFallbackUsed:        true,
+		SemanticFallbackReason:      "ann_index_missing",
+		SemanticLatencyMS:           12.5,
+		SemanticANNLatencyMS:        4.2,
+		SemanticBruteForceLatencyMS: 8.3,
 		Metadata: map[string]string{
 			"question":  "How do I reset the cache safely?",
 			"provider":  "deepseek",
@@ -342,6 +349,9 @@ func TestQAPreflightSemanticResponseBuildsSemanticTrace(t *testing.T) {
 	if unaryMeta.Trace.FinalAnswerSource != llm.FinalAnswerSourceQASemantic {
 		t.Fatalf("expected semantic final source, got %+v", unaryMeta.Trace)
 	}
+	if unaryMeta.Trace.AnswerSourceKind != llm.AnswerSourceKindCache {
+		t.Fatalf("expected semantic cache source kind, got %+v", unaryMeta.Trace)
+	}
 	if unaryMeta.Trace.QAHitType != qa.HitTypeSemantic {
 		t.Fatalf("expected semantic hit type, got %+v", unaryMeta.Trace)
 	}
@@ -354,6 +364,15 @@ func TestQAPreflightSemanticResponseBuildsSemanticTrace(t *testing.T) {
 	if unaryMeta.Trace.SemanticModel != "text-embedding-ada-002" || unaryMeta.Trace.SemanticSource != qa.SemanticRecallSourceBruteForce {
 		t.Fatalf("unexpected semantic model/source: %+v", unaryMeta.Trace)
 	}
+	if unaryMeta.Trace.SemanticModeRequested != qa.SemanticRecallModeANN || unaryMeta.Trace.SemanticModeUsed != qa.SemanticRecallModeBruteForce {
+		t.Fatalf("unexpected semantic mode trace: %+v", unaryMeta.Trace)
+	}
+	if !unaryMeta.Trace.SemanticFallbackUsed || unaryMeta.Trace.SemanticFallbackReason != "ann_index_missing" {
+		t.Fatalf("unexpected semantic fallback trace: %+v", unaryMeta.Trace)
+	}
+	if unaryMeta.Trace.SemanticLatencyMS != 12.5 || unaryMeta.Trace.SemanticANNLatencyMS != 4.2 || unaryMeta.Trace.SemanticBruteForceLatencyMS != 8.3 {
+		t.Fatalf("unexpected semantic latency trace: %+v", unaryMeta.Trace)
+	}
 
 	chunks, streamMeta, err := app.buildQAPreflightStreamResponses(context.Background(), request, lookupResult)
 	if err != nil {
@@ -361,6 +380,9 @@ func TestQAPreflightSemanticResponseBuildsSemanticTrace(t *testing.T) {
 	}
 	if streamMeta.Trace.FinalAnswerSource != llm.FinalAnswerSourceQASemantic {
 		t.Fatalf("expected semantic stream final source, got %+v", streamMeta.Trace)
+	}
+	if streamMeta.Trace.AnswerSourceKind != llm.AnswerSourceKindCache {
+		t.Fatalf("expected semantic stream cache source kind, got %+v", streamMeta.Trace)
 	}
 	if streamMeta.Trace.SemanticCandidateCount != 4 || streamMeta.Trace.SemanticTopK != 3 {
 		t.Fatalf("unexpected semantic stream trace counts: %+v", streamMeta.Trace)
@@ -370,6 +392,15 @@ func TestQAPreflightSemanticResponseBuildsSemanticTrace(t *testing.T) {
 	}
 	if streamMeta.Trace.SemanticModel != "text-embedding-ada-002" || streamMeta.Trace.SemanticSource != qa.SemanticRecallSourceBruteForce {
 		t.Fatalf("unexpected semantic stream model/source: %+v", streamMeta.Trace)
+	}
+	if streamMeta.Trace.SemanticModeRequested != qa.SemanticRecallModeANN || streamMeta.Trace.SemanticModeUsed != qa.SemanticRecallModeBruteForce {
+		t.Fatalf("unexpected semantic stream mode trace: %+v", streamMeta.Trace)
+	}
+	if !streamMeta.Trace.SemanticFallbackUsed || streamMeta.Trace.SemanticFallbackReason != "ann_index_missing" {
+		t.Fatalf("unexpected semantic stream fallback trace: %+v", streamMeta.Trace)
+	}
+	if streamMeta.Trace.SemanticLatencyMS != 12.5 || streamMeta.Trace.SemanticANNLatencyMS != 4.2 || streamMeta.Trace.SemanticBruteForceLatencyMS != 8.3 {
+		t.Fatalf("unexpected semantic stream latency trace: %+v", streamMeta.Trace)
 	}
 	if len(chunks) < 3 {
 		t.Fatalf("expected semantic stream chunks, got %+v", chunks)
@@ -383,6 +414,72 @@ func TestQAPreflightSemanticResponseBuildsSemanticTrace(t *testing.T) {
 	}
 	if got := content.String(); got != "semantic answer" {
 		t.Fatalf("unexpected semantic stream content: %q", got)
+	}
+}
+
+func TestQAPreflightUsesConfiguredSemanticMode(t *testing.T) {
+	retriever := &shadowRecordingRetriever{result: qa.LookupResult{
+		Hit:                   true,
+		HitType:               qa.HitTypeSemantic,
+		Answer:                "ann answer",
+		QuestionID:            "ann-1",
+		SemanticModeRequested: qa.SemanticRecallModeANN,
+		SemanticModeUsed:      qa.SemanticRecallModeANN,
+		SemanticSource:        qa.SemanticRecallSourceANNBucketedLSH,
+		Metadata: map[string]string{
+			"question": "How do I reset the cache safely?",
+			"provider": "deepseek",
+			"model":    "deepseek-chat",
+		},
+	}}
+	svc := newQAPreflightTestService(t, retriever, nil, nil)
+	svc.config.Retrieval.Semantic.Enabled = true
+	svc.config.Retrieval.Semantic.Mode = qa.SemanticRecallModeANN
+	request := &proto.ChatCompletionRequest{Id: "req-ann-mode", Message: "How do I reset the cache safely?"}
+	app := svc.newApp(request, nil, false)
+	hit, lookupResult, err := app.tryQAPreflight(context.Background(), request)
+	if err != nil {
+		t.Fatalf("ann preflight lookup: %v", err)
+	}
+	if !hit || lookupResult.HitType != qa.HitTypeSemantic {
+		t.Fatalf("expected semantic hit, got %+v", lookupResult)
+	}
+	if retriever.request.SemanticMode != qa.SemanticRecallModeANN {
+		t.Fatalf("expected configured ANN mode to reach retriever, got %+v", retriever.request)
+	}
+	if !retriever.request.SemanticEnabled {
+		t.Fatalf("expected semantic lookup to remain enabled, got %+v", retriever.request)
+	}
+	if lookupResult.SemanticModeRequested != qa.SemanticRecallModeANN || lookupResult.SemanticModeUsed != qa.SemanticRecallModeANN {
+		t.Fatalf("unexpected semantic mode on lookup result: %+v", lookupResult)
+	}
+
+	unaryResponse, unaryMeta, err := app.buildQAPreflightUnaryResponse(context.Background(), request, lookupResult)
+	if err != nil {
+		t.Fatalf("build ann unary response: %v", err)
+	}
+	if unaryResponse == nil || len(unaryResponse.Choices) != 1 || unaryResponse.Choices[0].Message.Content != "ann answer" {
+		t.Fatalf("unexpected ann unary response: %+v", unaryResponse)
+	}
+	if unaryMeta.Trace.SemanticModeRequested != qa.SemanticRecallModeANN || unaryMeta.Trace.SemanticModeUsed != qa.SemanticRecallModeANN {
+		t.Fatalf("unexpected ann unary trace: %+v", unaryMeta.Trace)
+	}
+	if unaryMeta.Trace.SemanticFallbackUsed {
+		t.Fatalf("did not expect fallback on healthy ANN lookup: %+v", unaryMeta.Trace)
+	}
+
+	chunks, streamMeta, err := app.buildQAPreflightStreamResponses(context.Background(), request, lookupResult)
+	if err != nil {
+		t.Fatalf("build ann stream responses: %v", err)
+	}
+	if len(chunks) < 3 {
+		t.Fatalf("expected ann stream chunks, got %+v", chunks)
+	}
+	if streamMeta.Trace.SemanticModeRequested != qa.SemanticRecallModeANN || streamMeta.Trace.SemanticModeUsed != qa.SemanticRecallModeANN {
+		t.Fatalf("unexpected ann stream trace: %+v", streamMeta.Trace)
+	}
+	if streamMeta.Trace.SemanticFallbackUsed {
+		t.Fatalf("did not expect ANN fallback on stream lookup: %+v", streamMeta.Trace)
 	}
 }
 

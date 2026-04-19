@@ -20,12 +20,12 @@
 
 ## 语义实验
 
-`ai-chat-service` 里已经有一个 feature-flagged 的 brute-force semantic 兜底层。它只在 exact / normalized / alias / candidate 都没有命中时参与，而且仍然保持 lexical 优先，不是 ANN，也不依赖外部 vector index。
+`ai-chat-service` 里已经有一个 feature-flagged 的 semantic 层。默认 `retrieval.semantic.mode=brute_force`，仍然只在 exact / normalized / alias / candidate 都没有命中时参与；如果显式切到 `ann`，会先走 ANN，再在索引缺失、查询错误、低分或其他失败场景下硬回退到 brute-force。
 
 建议优先看这几个位置：
 
-- 配置样例：`dev.config.yaml` 的 `retrieval.semantic`
-- 运行时 trace：`qa_hit_type`、`candidate_count`、`candidate_top_score`、`candidate_source`、`semantic_candidate_count`、`semantic_top_k`、`semantic_top_score`、`semantic_model`、`semantic_source`、`final_answer_source`
-- 评估入口：`scripts/bench_semantic_vs_lexical.sh`
+- 配置样例：`dev.config.yaml` 的 `retrieval.semantic.mode`
+- 运行时 trace：`qa_hit_type`、`candidate_count`、`candidate_top_score`、`candidate_source`、`semantic_candidate_count`、`semantic_top_k`、`semantic_top_score`、`semantic_model`、`semantic_source`、`semantic_mode_requested`、`semantic_mode_used`、`semantic_fallback_used`、`semantic_fallback_reason`、`semantic_latency_ms`、`semantic_ann_latency_ms`、`semantic_bruteforce_latency_ms`、`final_answer_source`
+- 评估入口：`scripts/bench_semantic_vs_lexical.sh`（调用 `cmd/retrieval-eval`，输出 `report.json`、`report.md` 和 `report.txt`；可通过 `RETRIEVAL_EVAL_CONFIG`、`RETRIEVAL_EVAL_EMBEDDING_MODE` 和 `RETRIEVAL_EVAL_EMBEDDING_PROFILE` 切换配置、placeholder/provider 模式和 embeddings profile。provider 模式默认走本地 `mock-openai-api`，先启动 `start_all_services.sh` 或单独启动 `mock-openai-api`）
 
-如果你要判断后续是否值得进入 ANN 阶段，先看语义评估里是否真的出现了稳定的 semantic-only 收益，再看 `corpus_limit` 和 lookup latency 是否已经开始成为瓶颈。
+如果你要判断后续是否值得把 `ann` 作为默认主路径，先看语义评估里是否真的出现了稳定的 semantic-only 收益，再看 `corpus_limit` 和 lookup latency 是否已经开始成为瓶颈。

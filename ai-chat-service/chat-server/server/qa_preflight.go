@@ -39,6 +39,7 @@ func (a *app) tryQAPreflight(ctx context.Context, in *proto.ChatCompletionReques
 		return false, qa.LookupResult{}, nil
 	}
 	semanticEnabled := false
+	semanticMode := qa.SemanticRecallModeBruteForce
 	semanticTopK := qa.DefaultSemanticTopK
 	semanticThreshold := qa.DefaultSemanticMinScore
 	semanticModel := ""
@@ -47,6 +48,7 @@ func (a *app) tryQAPreflight(ctx context.Context, in *proto.ChatCompletionReques
 	cfg := a.config
 	if cfg != nil {
 		semanticEnabled = cfg.Retrieval.Semantic.Enabled
+		semanticMode = semanticModeFromConfig(cfg)
 		if cfg.Retrieval.Semantic.TopK > 0 {
 			semanticTopK = cfg.Retrieval.Semantic.TopK
 		}
@@ -63,6 +65,8 @@ func (a *app) tryQAPreflight(ctx context.Context, in *proto.ChatCompletionReques
 			semanticCorpusLimit = cfg.Retrieval.Semantic.CorpusLimit
 		}
 	}
+	semanticShadow := a.semanticShadowConfig
+	semanticShadow.Enabled = semanticEnabled && semanticShadow.Enabled
 	normalizedQuestion := qa.NormalizeQuestion(question)
 	request := qa.LookupRequest{
 		Question:               question,
@@ -75,11 +79,13 @@ func (a *app) tryQAPreflight(ctx context.Context, in *proto.ChatCompletionReques
 		CandidateTopK:          qa.DefaultCandidateTopK,
 		CandidateMinScore:      qa.DefaultCandidateMinScore,
 		SemanticEnabled:        semanticEnabled,
+		SemanticMode:           semanticMode,
 		SemanticTopK:           semanticTopK,
 		SemanticThreshold:      semanticThreshold,
 		SemanticModel:          semanticModel,
 		SemanticEmbeddingDim:   semanticEmbeddingDim,
 		SemanticCorpusLimit:    semanticCorpusLimit,
+		SemanticShadow:         semanticShadow,
 		Metadata: map[string]string{
 			"request_id":          in.GetId(),
 			"session_id":          in.GetSessionId(),
@@ -93,6 +99,9 @@ func (a *app) tryQAPreflight(ctx context.Context, in *proto.ChatCompletionReques
 	if err != nil {
 		return false, qa.LookupResult{}, err
 	}
+	a.qaLookupResult = result
+	a.semanticShadowQuery = question
+	a.semanticShadowRequestID = in.GetId()
 	if !result.Hit || strings.TrimSpace(result.Answer) == "" {
 		return false, qa.LookupResult{}, nil
 	}
@@ -237,6 +246,7 @@ func (a *app) buildQAPreflightTrace(result qa.LookupResult) llm.AnswerTrace {
 		ActualModel:            modelName,
 		FallbackUsed:           fallbackUsed,
 		FallbackReason:         fallbackReason,
+		AnswerSourceKind:       llm.AnswerSourceKindCache,
 		UsedLocalRetrieval:     true,
 		CacheHit:               true,
 		QAHitType:              hitType,
@@ -252,7 +262,9 @@ func (a *app) buildQAPreflightTrace(result qa.LookupResult) llm.AnswerTrace {
 		GenerationProvider:     providerName,
 		GenerationModel:        modelName,
 	}
+	a.finalizeSemanticLookupTrace(&trace, result)
 	trace.RetrievedHits = []llm.RetrievalHit{buildQAPreflightRetrievalHit(result, providerName, modelName, hitType)}
+	a.finalizeSemanticShadowTrace(&trace, result, result.Answer)
 	return trace
 }
 

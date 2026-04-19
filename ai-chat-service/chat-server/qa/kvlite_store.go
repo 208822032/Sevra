@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"ai-chat-service/chat-server/llm"
@@ -32,6 +33,9 @@ type KVLiteStore struct {
 	semanticEmbeddingDim int
 	semanticModel        string
 	semanticProvider     llm.EmbeddingProvider
+
+	semanticANNCacheMu sync.RWMutex
+	semanticANNCache   map[string]*semanticANNIndex
 }
 
 type KVLiteOption func(*KVLiteStore)
@@ -83,8 +87,9 @@ func WithKVLiteSemanticConfig(cfg SemanticConfig) KVLiteOption {
 
 func NewKVLiteStore(cnf *config.Config, options ...KVLiteOption) (Store, error) {
 	store := &KVLiteStore{
-		namespace:  defaultQANamespace(cnf),
-		defaultTTL: defaultQATTL(cnf),
+		namespace:        defaultQANamespace(cnf),
+		defaultTTL:       defaultQATTL(cnf),
+		semanticANNCache: make(map[string]*semanticANNIndex),
 	}
 	if cnf != nil {
 		store.applySemanticConfig(semanticConfigFromConfig(cnf))
@@ -109,9 +114,10 @@ func NewKVLiteStore(cnf *config.Config, options ...KVLiteOption) (Store, error) 
 
 func NewKVLiteStoreWithBackend(backend kvliteBackend, namespace string, ttl time.Duration, options ...KVLiteOption) Store {
 	store := &KVLiteStore{
-		backend:    backend,
-		namespace:  normalizeQANamespace(namespace),
-		defaultTTL: ttl,
+		backend:          backend,
+		namespace:        normalizeQANamespace(namespace),
+		defaultTTL:       ttl,
+		semanticANNCache: make(map[string]*semanticANNIndex),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -188,6 +194,9 @@ func (s *KVLiteStore) Upsert(ctx context.Context, record *llm.QARecord, ttl time
 	}
 	if err := s.writeCandidateIndexes(ctx, stored, writeTTL); err != nil {
 		return err
+	}
+	if s.semanticEnabled && (stored.SemanticReady || stored.EmbeddingStatus == EmbeddingStatusReady) {
+		s.invalidateSemanticANNIndex(stored.Scope)
 	}
 	return nil
 }

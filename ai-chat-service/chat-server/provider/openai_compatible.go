@@ -91,6 +91,7 @@ func (p *OpenAICompatibleProvider) Chat(ctx context.Context, req llm.ChatRequest
 			Model:              resp.Model,
 			ActualProvider:     p.Name(),
 			ActualModel:        resp.Model,
+			AnswerSourceKind:   llm.AnswerSourceKindAI,
 			GenerationProvider: p.Name(),
 			GenerationModel:    resp.Model,
 			FinalAnswerSource:  llm.FinalAnswerSourceLLM,

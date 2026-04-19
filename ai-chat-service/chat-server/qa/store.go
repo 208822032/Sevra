@@ -20,6 +20,9 @@ const (
 
 	DefaultScope = "global"
 
+	SemanticRecallModeBruteForce = "brute_force"
+	SemanticRecallModeANN        = "ann"
+
 	DefaultCandidateTopK           = 6
 	DefaultCandidateMinScore       = 0.62
 	DefaultCandidateSignalLimit    = 24
@@ -27,11 +30,13 @@ const (
 	DefaultCandidateBucketSize     = 64
 	CandidateRecallSourceBigram    = "char_bigram"
 
-	DefaultSemanticTopK            = 4
-	DefaultSemanticMinScore        = 0.84
-	DefaultSemanticCorpusLimit     = 128
-	DefaultSemanticEmbeddingDim    = 64
-	SemanticRecallSourceBruteForce = "bruteforce_cosine"
+	DefaultSemanticTopK                = 4
+	DefaultSemanticMinScore            = 0.84
+	DefaultSemanticCorpusLimit         = 128
+	DefaultSemanticEmbeddingDim        = 64
+	SemanticRecallSourceBruteForce     = "bruteforce_cosine"
+	SemanticRecallSourceANNBucketedLSH = "ann_bucketed_lsh"
+	SemanticRecallSourceANNFallback    = "ann_fallback_bruteforce"
 
 	EmbeddingStatusPending = "pending"
 	EmbeddingStatusReady   = "ready"
@@ -51,35 +56,53 @@ type LookupRequest struct {
 	CandidateTopK          int
 	CandidateMinScore      float64
 	SemanticEnabled        bool
+	SemanticMode           string
 	SemanticTopK           int
 	SemanticThreshold      float64
 	SemanticModel          string
 	SemanticEmbeddingDim   int
 	SemanticCorpusLimit    int
+	SemanticShadow         SemanticShadowConfig
 	Metadata               map[string]string
 }
 
+type SemanticShadowConfig struct {
+	Enabled        bool
+	TopK           int
+	ScoreThreshold float64
+	LogDiffOnly    bool
+	SampleRate     float64
+}
+
 type LookupResult struct {
-	Hit                    bool
-	HitType                string
-	Answer                 string
-	Question               string
-	QuestionID             string
-	CanonicalQuestionID    string
-	CanonicalQuestion      string
-	CanonicalQuestionHash  string
-	AliasQuestion          string
-	AliasQuestionHash      string
-	CandidateCount         int
-	CandidateTopScore      float64
-	CandidateSource        string
-	SemanticCandidateCount int
-	SemanticTopK           int
-	SemanticTopScore       float64
-	SemanticModel          string
-	SemanticSource         string
-	Scope                  string
-	Metadata               map[string]string
+	Hit                         bool
+	HitType                     string
+	Answer                      string
+	Question                    string
+	QuestionID                  string
+	CanonicalQuestionID         string
+	CanonicalQuestion           string
+	CanonicalQuestionHash       string
+	AliasQuestion               string
+	AliasQuestionHash           string
+	CandidateCount              int
+	CandidateTopScore           float64
+	CandidateSource             string
+	SemanticCandidateCount      int
+	SemanticTopK                int
+	SemanticTopScore            float64
+	SemanticModel               string
+	SemanticSource              string
+	SemanticModeRequested       string
+	SemanticModeUsed            string
+	SemanticFallbackUsed        bool
+	SemanticFallbackReason      string
+	SemanticLatencyMS           float64
+	SemanticANNLatencyMS        float64
+	SemanticBruteForceLatencyMS float64
+	SemanticShadowTrace         llm.SemanticShadowTrace `json:"semantic_shadow_trace,omitempty"`
+	Scope                       string
+	Metadata                    map[string]string
 }
 
 type Retriever interface {
@@ -506,6 +529,7 @@ func cloneLookupResult(result LookupResult, hitType string) LookupResult {
 	if hitType != "" {
 		cloned.HitType = hitType
 	}
+	cloned.SemanticShadowTrace = cloneSemanticShadowTrace(cloned.SemanticShadowTrace)
 	if cloned.Metadata != nil {
 		metadata := make(map[string]string, len(cloned.Metadata))
 		for key, value := range cloned.Metadata {
@@ -514,5 +538,14 @@ func cloneLookupResult(result LookupResult, hitType string) LookupResult {
 		cloned.Metadata = metadata
 	}
 	cloned.Hit = true
+	return cloned
+}
+
+func cloneSemanticShadowTrace(trace llm.SemanticShadowTrace) llm.SemanticShadowTrace {
+	cloned := trace
+	if trace.ShadowSemanticTopHits != nil {
+		cloned.ShadowSemanticTopHits = make([]llm.RetrievalHit, len(trace.ShadowSemanticTopHits))
+		copy(cloned.ShadowSemanticTopHits, trace.ShadowSemanticTopHits)
+	}
 	return cloned
 }

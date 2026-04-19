@@ -322,7 +322,7 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 			TotalTokens:      tokens + resultTokens,
 			UsageSource:      resultTokenSource,
 		}
-		trace := app.buildAnswerTrace(decision, llm.FinalAnswerSourceLocal, true, decision.Mode == llm.AnswerModeCacheHit)
+		trace := app.buildAnswerTrace(decision, llm.FinalAnswerSourceLocal, true, decision.Mode == llm.AnswerModeCacheHit, decision.LocalAnswer)
 		meta := app.buildResponseMeta(trace, usage, tokens)
 		app.setResponseMetaTrailer(stream.Context(), meta)
 		startRes := app.buildChatCompletionStreamResponse(resultID, "", "")
@@ -425,7 +425,7 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 		TotalTokens:      tokens + resultTokens,
 		UsageSource:      resultTokenSource,
 	}
-	trace := app.buildAnswerTrace(decision, llm.FinalAnswerSourceLLM, decision.UseRetrievalAsContext, false)
+	trace := app.buildAnswerTrace(decision, llm.FinalAnswerSourceLLM, decision.UseRetrievalAsContext, false, completionContent)
 	if decision.UseRetrievalAsContext {
 		trace.FinalAnswerSource = llm.FinalAnswerSourceHybridLLM
 	}
@@ -482,13 +482,14 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 	return nil
 }
 
-func (a *app) buildAnswerTrace(decision llm.RouteDecision, finalAnswerSource string, usedLocalRetrieval bool, cacheHit bool) llm.AnswerTrace {
+func (a *app) buildAnswerTrace(decision llm.RouteDecision, finalAnswerSource string, usedLocalRetrieval bool, cacheHit bool, finalAnswer string) llm.AnswerTrace {
 	providerName := ""
 	modelName := ""
 	selectedProvider := ""
 	selectedModel := ""
 	fallbackUsed := false
 	fallbackReason := ""
+	qaResult := qa.LookupResult{}
 	if a != nil {
 		providerName = a.providerProfile.Name
 		modelName = a.openaiConf.Model
@@ -496,23 +497,50 @@ func (a *app) buildAnswerTrace(decision llm.RouteDecision, finalAnswerSource str
 		selectedModel = a.selectedModel
 		fallbackUsed = a.fallbackUsed
 		fallbackReason = a.fallbackReason
+		qaResult = a.qaLookupResult
 	}
 	trace := llm.AnswerTrace{
-		AnswerMode:         decision.Mode,
-		Provider:           providerName,
-		Model:              modelName,
-		SelectedProvider:   selectedProvider,
-		SelectedModel:      selectedModel,
-		ActualProvider:     providerName,
-		ActualModel:        modelName,
-		FallbackUsed:       fallbackUsed,
-		FallbackReason:     fallbackReason,
-		UsedLocalRetrieval: usedLocalRetrieval,
-		CacheHit:           cacheHit,
-		FinalAnswerSource:  finalAnswerSource,
-		GenerationProvider: providerName,
-		GenerationModel:    modelName,
-		RetrievedHits:      decision.RetrievalHits,
+		AnswerMode:                  decision.Mode,
+		Provider:                    providerName,
+		Model:                       modelName,
+		SelectedProvider:            selectedProvider,
+		SelectedModel:               selectedModel,
+		ActualProvider:              providerName,
+		ActualModel:                 modelName,
+		FallbackUsed:                fallbackUsed,
+		FallbackReason:              fallbackReason,
+		AnswerSourceKind:            answerSourceKindFromDecision(cacheHit),
+		UsedLocalRetrieval:          usedLocalRetrieval,
+		CacheHit:                    cacheHit,
+		FinalAnswerSource:           finalAnswerSource,
+		GenerationProvider:          providerName,
+		GenerationModel:             modelName,
+		RetrievedHits:               decision.RetrievalHits,
+		QAHitType:                   qaResult.HitType,
+		CandidateCount:              qaResult.CandidateCount,
+		CandidateTopScore:           qaResult.CandidateTopScore,
+		CandidateSource:             qaResult.CandidateSource,
+		SemanticCandidateCount:      qaResult.SemanticCandidateCount,
+		SemanticTopK:                qaResult.SemanticTopK,
+		SemanticTopScore:            qaResult.SemanticTopScore,
+		SemanticModel:               qaResult.SemanticModel,
+		SemanticSource:              qaResult.SemanticSource,
+		SemanticModeRequested:       qaResult.SemanticModeRequested,
+		SemanticModeUsed:            qaResult.SemanticModeUsed,
+		SemanticFallbackUsed:        qaResult.SemanticFallbackUsed,
+		SemanticFallbackReason:      qaResult.SemanticFallbackReason,
+		SemanticLatencyMS:           qaResult.SemanticLatencyMS,
+		SemanticANNLatencyMS:        qaResult.SemanticANNLatencyMS,
+		SemanticBruteForceLatencyMS: qaResult.SemanticBruteForceLatencyMS,
 	}
+	a.finalizeSemanticLookupTrace(&trace, qaResult)
+	a.finalizeSemanticShadowTrace(&trace, qaResult, finalAnswer)
 	return trace
+}
+
+func answerSourceKindFromDecision(cacheHit bool) string {
+	if cacheHit {
+		return llm.AnswerSourceKindCache
+	}
+	return llm.AnswerSourceKindAI
 }

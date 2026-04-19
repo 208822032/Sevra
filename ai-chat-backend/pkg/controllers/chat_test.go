@@ -109,7 +109,7 @@ func TestConfigReturnsProviderCatalog(t *testing.T) {
 }
 
 func TestParseAndMergeResponseMetaPreserveCandidateTrace(t *testing.T) {
-	traceJSON := `{"answer_mode":"cache_hit","provider":"deepseek","model":"deepseek-chat","qa_hit_type":"candidate","candidate_count":3,"candidate_top_score":0.91,"candidate_source":"char_bigram","final_answer_source":"qa_candidate","generation_provider":"deepseek","generation_model":"deepseek-chat","retrieved_hits":[{"record_id":"qa-1","score":0.91,"hit_type":"candidate","question_preview":"How do I flush the Redis cache quickly?","answer_preview":"candidate answer","provider":"deepseek","model":"deepseek-chat"}]}`
+	traceJSON := `{"answer_mode":"cache_hit","provider":"deepseek","model":"deepseek-chat","answer_source_kind":"cache","qa_hit_type":"candidate","candidate_count":3,"candidate_top_score":0.91,"candidate_source":"char_bigram","final_answer_source":"qa_candidate","generation_provider":"deepseek","generation_model":"deepseek-chat","retrieved_hits":[{"record_id":"qa-1","score":0.91,"hit_type":"candidate","question_preview":"How do I flush the Redis cache quickly?","answer_preview":"candidate answer","provider":"deepseek","model":"deepseek-chat"}]}`
 	meta := parseResponseMeta(metadata.Pairs("x-ai-trace", traceJSON))
 	if meta == nil {
 		t.Fatalf("expected response meta")
@@ -126,6 +126,9 @@ func TestParseAndMergeResponseMetaPreserveCandidateTrace(t *testing.T) {
 	if meta.Trace.FinalAnswerSource != "qa_candidate" {
 		t.Fatalf("unexpected final answer source: %+v", meta.Trace)
 	}
+	if meta.Trace.AnswerSourceKind != "cache" {
+		t.Fatalf("unexpected answer source kind: %+v", meta.Trace)
+	}
 
 	message := &ChatMessage{
 		Trace: &AnswerTrace{
@@ -133,6 +136,7 @@ func TestParseAndMergeResponseMetaPreserveCandidateTrace(t *testing.T) {
 			Provider:          "openai",
 			Model:             "gpt-4o-mini",
 			FinalAnswerSource: "llm",
+			AnswerSourceKind:  "ai",
 		},
 	}
 	mergeResponseMeta(message, meta)
@@ -148,13 +152,16 @@ func TestParseAndMergeResponseMetaPreserveCandidateTrace(t *testing.T) {
 	if message.Trace.FinalAnswerSource != "qa_candidate" {
 		t.Fatalf("unexpected merged final answer source: %+v", message.Trace)
 	}
+	if message.Trace.AnswerSourceKind != "cache" {
+		t.Fatalf("unexpected merged answer source kind: %+v", message.Trace)
+	}
 	if len(message.Trace.RetrievedHits) != 1 || message.Trace.RetrievedHits[0].HitType != "candidate" {
 		t.Fatalf("unexpected merged retrieved hits: %+v", message.Trace.RetrievedHits)
 	}
 }
 
 func TestParseAndMergeResponseMetaPreserveSemanticTrace(t *testing.T) {
-	traceJSON := `{"answer_mode":"cache_hit","provider":"deepseek","model":"deepseek-chat","qa_hit_type":"semantic","semantic_candidate_count":4,"semantic_top_k":3,"semantic_top_score":0.93,"semantic_model":"text-embedding-ada-002","semantic_source":"bruteforce_cosine","final_answer_source":"qa_semantic","retrieved_hits":[{"record_id":"qa-7","score":0.93,"hit_type":"semantic","question_preview":"How do I reset the cache safely?","answer_preview":"semantic answer","provider":"deepseek","model":"deepseek-chat"}]}`
+	traceJSON := `{"answer_mode":"cache_hit","provider":"deepseek","model":"deepseek-chat","answer_source_kind":"cache","qa_hit_type":"semantic","semantic_candidate_count":4,"semantic_top_k":3,"semantic_top_score":0.93,"semantic_mode_requested":"ann","semantic_mode_used":"brute_force","semantic_fallback_used":true,"semantic_fallback_reason":"ann_index_missing","semantic_latency_ms":12.5,"semantic_ann_latency_ms":4.2,"semantic_brute_force_latency_ms":8.3,"semantic_model":"text-embedding-ada-002","semantic_source":"bruteforce_cosine","final_answer_source":"qa_semantic","retrieved_hits":[{"record_id":"qa-7","score":0.93,"hit_type":"semantic","question_preview":"How do I reset the cache safely?","answer_preview":"semantic answer","provider":"deepseek","model":"deepseek-chat"}]}`
 	meta := parseResponseMeta(metadata.Pairs("x-ai-trace", traceJSON))
 	if meta == nil {
 		t.Fatalf("expected response meta")
@@ -171,8 +178,20 @@ func TestParseAndMergeResponseMetaPreserveSemanticTrace(t *testing.T) {
 	if meta.Trace.FinalAnswerSource != "qa_semantic" {
 		t.Fatalf("unexpected semantic final answer source: %+v", meta.Trace)
 	}
+	if meta.Trace.AnswerSourceKind != "cache" {
+		t.Fatalf("unexpected semantic answer source kind: %+v", meta.Trace)
+	}
+	if meta.Trace.SemanticModeRequested != "ann" || meta.Trace.SemanticModeUsed != "brute_force" {
+		t.Fatalf("unexpected semantic mode fields: %+v", meta.Trace)
+	}
+	if !meta.Trace.SemanticFallbackUsed || meta.Trace.SemanticFallbackReason != "ann_index_missing" {
+		t.Fatalf("unexpected semantic fallback fields: %+v", meta.Trace)
+	}
+	if meta.Trace.SemanticLatencyMS != 12.5 || meta.Trace.SemanticANNLatencyMS != 4.2 || meta.Trace.SemanticBruteForceLatencyMS != 8.3 {
+		t.Fatalf("unexpected semantic latency fields: %+v", meta.Trace)
+	}
 
-	message := &ChatMessage{Trace: &AnswerTrace{AnswerMode: "api", Provider: "openai", Model: "gpt-4o-mini", FinalAnswerSource: "llm"}}
+	message := &ChatMessage{Trace: &AnswerTrace{AnswerMode: "api", Provider: "openai", Model: "gpt-4o-mini", FinalAnswerSource: "llm", AnswerSourceKind: "ai"}}
 	mergeResponseMeta(message, meta)
 	if message.Trace.SemanticCandidateCount != 4 || message.Trace.SemanticTopK != 3 {
 		t.Fatalf("unexpected merged semantic counts: %+v", message.Trace)
@@ -185,5 +204,17 @@ func TestParseAndMergeResponseMetaPreserveSemanticTrace(t *testing.T) {
 	}
 	if message.Trace.FinalAnswerSource != "qa_semantic" {
 		t.Fatalf("unexpected merged semantic final answer source: %+v", message.Trace)
+	}
+	if message.Trace.AnswerSourceKind != "cache" {
+		t.Fatalf("unexpected merged semantic answer source kind: %+v", message.Trace)
+	}
+	if message.Trace.SemanticModeRequested != "ann" || message.Trace.SemanticModeUsed != "brute_force" {
+		t.Fatalf("unexpected merged semantic mode fields: %+v", message.Trace)
+	}
+	if !message.Trace.SemanticFallbackUsed || message.Trace.SemanticFallbackReason != "ann_index_missing" {
+		t.Fatalf("unexpected merged semantic fallback fields: %+v", message.Trace)
+	}
+	if message.Trace.SemanticLatencyMS != 12.5 || message.Trace.SemanticANNLatencyMS != 4.2 || message.Trace.SemanticBruteForceLatencyMS != 8.3 {
+		t.Fatalf("unexpected merged semantic latency fields: %+v", message.Trace)
 	}
 }
