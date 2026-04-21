@@ -2,6 +2,8 @@ package main
 
 import (
 	bytes2 "bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -155,46 +157,131 @@ func embeddings(ctx *gin.Context) {
 }
 
 func buildEmbeddingVector(text string) []float32 {
-	const dimension = 8
+	const dimension = 64
 	vector := make([]float32, dimension)
-	matched := false
 	for _, token := range tokenizeEmbeddingText(text) {
-		weights, ok := embeddingLexicon[token]
-		if !ok {
+		if token == "" {
 			continue
 		}
-		matched = true
-		for _, weight := range weights {
-			if weight.index < 0 || weight.index >= len(vector) {
-				continue
+		weights, ok := embeddingLexicon[token]
+		if ok {
+			for _, weight := range weights {
+				if weight.index < 0 || weight.index >= len(vector) {
+					continue
+				}
+				vector[weight.index] += weight.weight
 			}
-			vector[weight.index] += weight.weight
 		}
+		addHashedEmbeddingFeature(vector, token, 0.35)
 	}
-	if !matched {
-		vector[7] = 1
+	if len(strings.TrimSpace(text)) > 0 {
+		addHashedEmbeddingFeature(vector, strings.ToLower(strings.TrimSpace(text)), 0.25)
 	}
 	normalizeEmbeddingVector(vector)
 	return vector
 }
 
 func tokenizeEmbeddingText(text string) []string {
-	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !(unicode.IsLetter(r) || unicode.IsDigit(r))
-	})
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized == "" {
+		return nil
+	}
+	tokens := make([]string, 0, len(normalized))
+	var ascii strings.Builder
+	var cjk []rune
+	flushASCII := func() {
+		if ascii.Len() == 0 {
+			return
+		}
+		token := strings.TrimSpace(ascii.String())
+		ascii.Reset()
+		if token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	flushCJK := func() {
+		if len(cjk) == 0 {
+			return
+		}
+		for index, r := range cjk {
+			tokens = append(tokens, string(r))
+			if index > 0 {
+				tokens = append(tokens, string([]rune{cjk[index-1], r}))
+			}
+		}
+		cjk = cjk[:0]
+	}
+	for _, r := range normalized {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			if isCJKRune(r) {
+				flushASCII()
+				cjk = append(cjk, r)
+			} else {
+				flushCJK()
+				ascii.WriteRune(r)
+			}
+		default:
+			flushASCII()
+			flushCJK()
+		}
+	}
+	flushASCII()
+	flushCJK()
+	return uniqueEmbeddingTokens(tokens)
 }
 
 func estimateEmbeddingTokens(text string) int {
-	count := 0
-	for _, token := range tokenizeEmbeddingText(text) {
-		if token != "" {
-			count++
-		}
-	}
-	if count == 0 {
+	tokens := tokenizeEmbeddingText(text)
+	if len(tokens) == 0 {
 		return 1
 	}
-	return count
+	return len(tokens)
+}
+
+func isCJKRune(r rune) bool {
+	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul)
+}
+
+func uniqueEmbeddingTokens(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
+}
+
+func addHashedEmbeddingFeature(vector []float32, token string, weight float32) {
+	if len(vector) == 0 || weight == 0 {
+		return
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return
+	}
+	sum := sha256.Sum256([]byte(token))
+	primary := int(binary.LittleEndian.Uint64(sum[:8]) % uint64(len(vector)))
+	secondary := int(binary.LittleEndian.Uint64(sum[8:16]) % uint64(len(vector)))
+	sign := float32(1)
+	if sum[16]&1 == 1 {
+		sign = -1
+	}
+	vector[primary] += sign * weight
+	if secondary != primary {
+		vector[secondary] += sign * weight * 0.5
+	}
 }
 
 func normalizeEmbeddingVector(vector []float32) {

@@ -13,18 +13,86 @@ import (
 )
 
 type SemanticConfig struct {
-	Enabled        bool
-	TopK           int
-	Threshold      float64
-	CorpusLimit    int
-	EmbeddingModel string
-	EmbeddingDim   int
-	AsyncBackfill  bool
+	Enabled          bool
+	TopK             int
+	Threshold        float64
+	CorpusLimit      int
+	ANN              SemanticANNConfig
+	EmbeddingProfile string
+	EmbeddingModel   string
+	EmbeddingDim     int
+	AsyncBackfill    bool
+}
+
+type SemanticANNConfig struct {
+	TopK               int
+	MinScoreGap        float64
+	SampleEnabled      bool
+	SampleRate         float64
+	ExportFallbackOnly bool
+	ExportPath         string
+}
+
+type semanticEmbeddingSignature struct {
+	Profile string
+	Model   string
+	Dim     int
+}
+
+func newSemanticEmbeddingSignature(profile, model string, dim int) semanticEmbeddingSignature {
+	signature := semanticEmbeddingSignature{
+		Profile: normalizeSemanticIdentity(profile),
+		Model:   normalizeSemanticIdentity(model),
+		Dim:     dim,
+	}
+	if signature.Dim <= 0 {
+		signature.Dim = DefaultSemanticEmbeddingDim
+	}
+	if signature.Model == "" {
+		signature.Model = "placeholder-hash-embedding"
+	}
+	return signature
+}
+
+func normalizeSemanticIdentity(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func (signature semanticEmbeddingSignature) String() string {
+	return fmt.Sprintf("embedding_profile=%s|embedding_model=%s|embedding_dim=%d", signature.Profile, signature.Model, signature.Dim)
+}
+
+func (signature semanticEmbeddingSignature) matchesPayload(payload semanticEmbeddingPayload, record *llm.QARecord) (bool, string) {
+	if signature.Dim > 0 {
+		payloadDim := payload.Dim
+		if payloadDim <= 0 && record != nil {
+			payloadDim = record.EmbeddingDim
+		}
+		if payloadDim > 0 && payloadDim != signature.Dim {
+			return false, "semantic_embedding_dim_mismatch"
+		}
+	}
+	recordModel := ""
+	recordProfile := ""
+	if record != nil {
+		recordModel = firstNonEmpty(record.EmbeddingModel, record.Metadata["embedding_model"])
+		recordProfile = firstNonEmpty(record.Metadata["embedding_profile"])
+	}
+	payloadModel := normalizeSemanticIdentity(firstNonEmpty(payload.Model, recordModel, payload.Provider))
+	if signature.Model != "" && payloadModel != "" && !strings.EqualFold(payloadModel, signature.Model) {
+		return false, "semantic_embedding_model_mismatch"
+	}
+	payloadProfile := normalizeSemanticIdentity(firstNonEmpty(payload.Profile, recordProfile))
+	if signature.Profile != "" && payloadProfile != "" && !strings.EqualFold(payloadProfile, signature.Profile) {
+		return false, "semantic_embedding_profile_mismatch"
+	}
+	return true, ""
 }
 
 type semanticEmbeddingPayload struct {
 	Model     string    `json:"model"`
 	Provider  string    `json:"provider,omitempty"`
+	Profile   string    `json:"profile,omitempty"`
 	Dim       int       `json:"dim"`
 	Vector    []float32 `json:"vector"`
 	UpdatedAt int64     `json:"updated_at"`

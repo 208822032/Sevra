@@ -86,6 +86,12 @@ type AnswerTrace struct {
 	SemanticCandidateCount      int            `json:"semantic_candidate_count,omitempty"`
 	SemanticTopK                int            `json:"semantic_top_k,omitempty"`
 	SemanticTopScore            float64        `json:"semantic_top_score,omitempty"`
+	SemanticANNTopK             int            `json:"semantic_ann_top_k,omitempty"`
+	SemanticANNTopScore         float64        `json:"semantic_ann_top_score,omitempty"`
+	SemanticANNTop2Score        float64        `json:"semantic_ann_top2_score,omitempty"`
+	SemanticANNScoreGap         float64        `json:"semantic_ann_score_gap,omitempty"`
+	SemanticANNMinScoreGap      float64        `json:"semantic_ann_min_score_gap,omitempty"`
+	SemanticANNDecision         string         `json:"semantic_ann_decision,omitempty"`
 	SemanticModeRequested       string         `json:"semantic_mode_requested,omitempty"`
 	SemanticModeUsed            string         `json:"semantic_mode_used,omitempty"`
 	SemanticFallbackUsed        bool           `json:"semantic_fallback_used,omitempty"`
@@ -444,6 +450,14 @@ func mergeResponseMeta(result *ChatMessage, meta *ResponseMeta) {
 	result.Trace.SemanticCandidateCount = meta.Trace.SemanticCandidateCount
 	result.Trace.SemanticTopK = meta.Trace.SemanticTopK
 	result.Trace.SemanticTopScore = meta.Trace.SemanticTopScore
+	result.Trace.SemanticANNTopK = meta.Trace.SemanticANNTopK
+	result.Trace.SemanticANNTopScore = meta.Trace.SemanticANNTopScore
+	result.Trace.SemanticANNTop2Score = meta.Trace.SemanticANNTop2Score
+	result.Trace.SemanticANNScoreGap = meta.Trace.SemanticANNScoreGap
+	result.Trace.SemanticANNMinScoreGap = meta.Trace.SemanticANNMinScoreGap
+	if meta.Trace.SemanticANNDecision != "" {
+		result.Trace.SemanticANNDecision = meta.Trace.SemanticANNDecision
+	}
 	if meta.Trace.SemanticModeRequested != "" {
 		result.Trace.SemanticModeRequested = meta.Trace.SemanticModeRequested
 	}

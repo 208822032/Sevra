@@ -8,7 +8,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ai-chat-service ./chat-ser
 FROM quay.io/0voice/alpine:3.18 as stage1
 ADD ./grpc_health_probe-linux-amd64 /usr/bin/grpc_health_probe
 RUN chmod +x /usr/bin/grpc_health_probe
-MAINTAINER nick
+
 WORKDIR /app/
 ADD ./dev.config.yaml /app/config.yaml
 COPY --from=stage0 /src/ai-chat-service/ai-chat-service ./

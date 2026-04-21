@@ -30,13 +30,17 @@ const (
 	DefaultCandidateBucketSize     = 64
 	CandidateRecallSourceBigram    = "char_bigram"
 
-	DefaultSemanticTopK                = 4
-	DefaultSemanticMinScore            = 0.84
-	DefaultSemanticCorpusLimit         = 128
-	DefaultSemanticEmbeddingDim        = 64
-	SemanticRecallSourceBruteForce     = "bruteforce_cosine"
-	SemanticRecallSourceANNBucketedLSH = "ann_bucketed_lsh"
-	SemanticRecallSourceANNFallback    = "ann_fallback_bruteforce"
+	DefaultSemanticTopK                  = 4
+	DefaultSemanticMinScore              = 0.84
+	DefaultSemanticANNTopK               = 3
+	DefaultSemanticANNMinScoreGap        = 0.05
+	DefaultSemanticANNSampleRate         = 0.1
+	DefaultSemanticANNExportFallbackOnly = true
+	DefaultSemanticCorpusLimit           = 128
+	DefaultSemanticEmbeddingDim          = 64
+	SemanticRecallSourceBruteForce       = "bruteforce_cosine"
+	SemanticRecallSourceANNBucketedLSH   = "ann_bucketed_lsh"
+	SemanticRecallSourceANNFallback      = "ann_fallback_bruteforce"
 
 	EmbeddingStatusPending = "pending"
 	EmbeddingStatusReady   = "ready"
@@ -59,6 +63,8 @@ type LookupRequest struct {
 	SemanticMode           string
 	SemanticTopK           int
 	SemanticThreshold      float64
+	SemanticANNTopK        int
+	SemanticANNMinScoreGap float64
 	SemanticModel          string
 	SemanticEmbeddingDim   int
 	SemanticCorpusLimit    int
@@ -91,6 +97,12 @@ type LookupResult struct {
 	SemanticCandidateCount      int
 	SemanticTopK                int
 	SemanticTopScore            float64
+	SemanticANNTopK             int
+	SemanticANNTopScore         float64
+	SemanticANNTop2Score        float64
+	SemanticANNScoreGap         float64
+	SemanticANNMinScoreGap      float64
+	SemanticANNDecision         string
 	SemanticModel               string
 	SemanticSource              string
 	SemanticModeRequested       string

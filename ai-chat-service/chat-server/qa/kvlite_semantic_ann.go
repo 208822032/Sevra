@@ -17,6 +17,15 @@ const (
 	semanticANNProbeRadius      = 1
 	semanticANNFallbackSource   = SemanticRecallSourceANNFallback
 	semanticANNDefaultBucketKey = ""
+	semanticANNDecisionHit      = "hit"
+	semanticANNDecisionFallback = "fallback"
+	semanticANNDecisionMiss     = "miss"
+
+	semanticANNReasonNoCandidates                = "ann_no_candidates"
+	semanticANNReasonScoreBelowThreshold         = "ann_score_below_threshold"
+	semanticANNReasonScoreGapTooSmall            = "ann_score_gap_too_small"
+	semanticANNReasonAmbiguousTopK               = "ann_ambiguous_topk"
+	semanticANNReasonDirectRejectedFallbackBrute = "ann_direct_rejected_fallback_bruteforce"
 )
 
 type semanticANNIndex struct {
@@ -72,8 +81,46 @@ func semanticModeSource(mode string) string {
 	}
 }
 
+func semanticANNDirectFallbackReason(cause string) string {
+	cause = strings.TrimSpace(cause)
+	if cause == "" {
+		return semanticANNReasonDirectRejectedFallbackBrute
+	}
+	return fmt.Sprintf("%s:%s", semanticANNReasonDirectRejectedFallbackBrute, cause)
+}
+
+func semanticANNDirectGateReason(hits []semanticANNHit, threshold, minScoreGap float64) string {
+	if len(hits) == 0 {
+		return semanticANNReasonNoCandidates
+	}
+	if threshold <= 0 {
+		threshold = DefaultSemanticMinScore
+	}
+	if minScoreGap <= 0 {
+		minScoreGap = DefaultSemanticANNMinScoreGap
+	}
+	top1Score := hits[0].Score
+	if top1Score < threshold {
+		return semanticANNReasonScoreBelowThreshold
+	}
+	if len(hits) == 1 {
+		return ""
+	}
+	if len(hits) >= 3 && top1Score-hits[2].Score < minScoreGap {
+		return semanticANNReasonAmbiguousTopK
+	}
+	if top1Score-hits[1].Score < minScoreGap {
+		return semanticANNReasonScoreGapTooSmall
+	}
+	return ""
+}
+
 func (s *KVLiteStore) semanticANNCacheKey(scope string, corpusLimit int) string {
-	return fmt.Sprintf("%s|%d", normalizeScope(scope), normalizePositiveInt(corpusLimit, DefaultSemanticCorpusLimit))
+	signature := newSemanticEmbeddingSignature("", "", 0)
+	if s != nil {
+		signature = s.semanticEmbeddingSignature()
+	}
+	return fmt.Sprintf("%s|%d|%s", normalizeScope(scope), normalizePositiveInt(corpusLimit, DefaultSemanticCorpusLimit), signature.String())
 }
 
 func semanticANNCacheScopePrefix(scope string) string {
@@ -132,6 +179,7 @@ func (s *KVLiteStore) buildSemanticANNIndex(ctx context.Context, scope string, c
 	if s == nil || s.backend == nil || !s.semanticEnabled {
 		return nil, nil
 	}
+	signature := s.semanticEmbeddingSignature()
 	payload, err := s.backend.RGet(ctx, s.semanticScopeIndexKey(scope))
 	if err != nil {
 		return nil, err
@@ -150,7 +198,8 @@ func (s *KVLiteStore) buildSemanticANNIndex(ctx context.Context, scope string, c
 		candidateIDs = candidateIDs[:corpusLimit]
 	}
 
-	var index *semanticANNIndex
+	index := newSemanticANNIndex(scope, corpusLimit, signature)
+
 	for _, questionID := range candidateIDs {
 		record, loadErr := s.loadRecord(ctx, questionID)
 		if loadErr != nil {
@@ -175,13 +224,13 @@ func (s *KVLiteStore) buildSemanticANNIndex(ctx context.Context, scope string, c
 		if err != nil || len(embeddingPayload.Vector) == 0 {
 			continue
 		}
-		if index == nil {
-			index = newSemanticANNIndex(scope, corpusLimit, len(embeddingPayload.Vector))
+		if ok, _ := signature.matchesPayload(embeddingPayload, record); !ok {
+			continue
 		}
 		if len(embeddingPayload.Vector) != index.EmbeddingDim {
 			continue
 		}
-		index.addRecord(record, embeddingPayload.Vector, embeddingPayload.Model)
+		index.addRecord(record, embeddingPayload.Vector, firstNonEmpty(embeddingPayload.Model, record.EmbeddingModel))
 	}
 	if index == nil || len(index.Entries) == 0 {
 		return nil, nil
@@ -189,10 +238,13 @@ func (s *KVLiteStore) buildSemanticANNIndex(ctx context.Context, scope string, c
 	return index, nil
 }
 
-func newSemanticANNIndex(scope string, corpusLimit, embeddingDim int) *semanticANNIndex {
+func newSemanticANNIndex(scope string, corpusLimit int, signature semanticEmbeddingSignature) *semanticANNIndex {
+	if signature.Dim <= 0 {
+		signature.Dim = DefaultSemanticEmbeddingDim
+	}
 	projectionBits := semanticANNProjectionBits
-	if embeddingDim > 0 && projectionBits > embeddingDim {
-		projectionBits = embeddingDim
+	if signature.Dim > 0 && projectionBits > signature.Dim {
+		projectionBits = signature.Dim
 	}
 	if projectionBits <= 0 {
 		projectionBits = semanticANNProjectionBits
@@ -200,10 +252,10 @@ func newSemanticANNIndex(scope string, corpusLimit, embeddingDim int) *semanticA
 	index := &semanticANNIndex{
 		Scope:          normalizeScope(scope),
 		CorpusLimit:    normalizePositiveInt(corpusLimit, DefaultSemanticCorpusLimit),
-		EmbeddingDim:   embeddingDim,
+		EmbeddingDim:   signature.Dim,
 		ProjectionBits: projectionBits,
 		ProbeRadius:    semanticANNProbeRadius,
-		Version:        buildSemanticANNIndexVersion(scope, corpusLimit, embeddingDim, projectionBits, semanticANNProbeRadius),
+		Version:        buildSemanticANNIndexVersion(scope, corpusLimit, signature, projectionBits, semanticANNProbeRadius),
 		Entries:        make(map[string]semanticANNIndexEntry),
 		Buckets:        make(map[string][]string),
 	}
@@ -211,8 +263,8 @@ func newSemanticANNIndex(scope string, corpusLimit, embeddingDim int) *semanticA
 	return index
 }
 
-func buildSemanticANNIndexVersion(scope string, corpusLimit, embeddingDim, projectionBits, probeRadius int) string {
-	return fmt.Sprintf("scope=%s|corpus=%d|dim=%d|bits=%d|probe=%d", normalizeScope(scope), normalizePositiveInt(corpusLimit, DefaultSemanticCorpusLimit), embeddingDim, projectionBits, probeRadius)
+func buildSemanticANNIndexVersion(scope string, corpusLimit int, signature semanticEmbeddingSignature, projectionBits, probeRadius int) string {
+	return fmt.Sprintf("scope=%s|corpus=%d|%s|bits=%d|probe=%d", normalizeScope(scope), normalizePositiveInt(corpusLimit, DefaultSemanticCorpusLimit), signature.String(), projectionBits, probeRadius)
 }
 
 func buildSemanticANNProjections(scope string, corpusLimit, embeddingDim, projectionBits int) [][]float32 {
@@ -368,6 +420,7 @@ func (idx *semanticANNIndex) queryTopMatches(vector []float32, limit int) ([]sem
 		return nil, 0, nil
 	}
 	hits := make([]semanticANNHit, 0, len(candidateIDs))
+	var candidateCount int
 	for _, questionID := range candidateIDs {
 		entry, ok := idx.Entries[questionID]
 		if !ok || entry.Record == nil || len(entry.Vector) == 0 {
@@ -380,6 +433,7 @@ func (idx *semanticANNIndex) queryTopMatches(vector []float32, limit int) ([]sem
 			Score:      cosineSimilarity(vector, entry.Vector),
 			Model:      entry.EmbeddingModel,
 		})
+		candidateCount++
 	}
 	if len(hits) == 0 {
 		return nil, 0, nil

@@ -78,6 +78,12 @@ func (a *app) finalizeSemanticLookupTrace(trace *llm.AnswerTrace, result qa.Look
 	trace.SemanticLatencyMS = result.SemanticLatencyMS
 	trace.SemanticANNLatencyMS = result.SemanticANNLatencyMS
 	trace.SemanticBruteForceLatencyMS = result.SemanticBruteForceLatencyMS
+	trace.SemanticANNTopK = result.SemanticANNTopK
+	trace.SemanticANNTopScore = result.SemanticANNTopScore
+	trace.SemanticANNTop2Score = result.SemanticANNTop2Score
+	trace.SemanticANNScoreGap = result.SemanticANNScoreGap
+	trace.SemanticANNMinScoreGap = result.SemanticANNMinScoreGap
+	trace.SemanticANNDecision = result.SemanticANNDecision
 }
 
 func (a *app) finalizeSemanticShadowTrace(trace *llm.AnswerTrace, result qa.LookupResult, finalAnswer string) {
@@ -135,31 +141,38 @@ func (a *app) recordSemanticShadowObservation(result qa.LookupResult, shadow llm
 		return
 	}
 	fields := map[string]interface{}{
-		"request_id":                  a.semanticShadowRequestID,
-		"session_id":                  a.sessionID,
-		"query":                       a.semanticShadowQuery,
-		"main_hit":                    result.Hit,
-		"main_hit_type":               result.HitType,
-		"main_answer_id":              firstNonEmptyString(result.CanonicalQuestionID, result.QuestionID),
-		"main_answer":                 strings.TrimSpace(result.Answer),
-		"main_semantic_top_score":     result.SemanticTopScore,
-		"main_semantic_source":        result.SemanticSource,
-		"ann_shadow_enabled":          shadow.ShadowSemanticEnabled,
-		"ann_shadow_hit":              shadow.ShadowSemanticHit,
-		"ann_shadow_layer":            shadow.ShadowSemanticLayer,
-		"ann_shadow_answer_id":        shadow.ShadowSemanticAnswerID,
-		"ann_shadow_answer":           shadow.ShadowSemanticAnswer,
-		"ann_shadow_top_score":        shadow.ShadowSemanticTopScore,
-		"ann_shadow_top_k":            shadow.ShadowSemanticTopK,
-		"ann_shadow_latency_ms":       shadow.ShadowSemanticLatencyMS,
-		"ann_shadow_index_source":     shadow.ShadowSemanticIndexSource,
-		"ann_shadow_index_version":    shadow.ShadowSemanticIndexVersion,
-		"ann_vs_bruteforce_same_top1": shadow.ShadowSemanticSameTop1,
-		"ann_vs_final_answer_same":    shadow.ShadowSemanticSameAsFinal,
-		"ann_shadow_error":            shadow.ShadowSemanticError,
-		"ann_shadow_fallback_used":    shadow.ShadowSemanticFallbackUsed,
-		"ann_shadow_diff_category":    shadow.ShadowSemanticDiffCategory,
-		"ann_shadow_top_hits":         shadow.ShadowSemanticTopHits,
+		"request_id":                      a.semanticShadowRequestID,
+		"session_id":                      a.sessionID,
+		"query":                           a.semanticShadowQuery,
+		"main_hit":                        result.Hit,
+		"main_hit_type":                   result.HitType,
+		"main_answer_id":                  firstNonEmptyString(result.CanonicalQuestionID, result.QuestionID),
+		"main_answer":                     strings.TrimSpace(result.Answer),
+		"main_semantic_top_score":         result.SemanticTopScore,
+		"main_semantic_ann_top_k":         result.SemanticANNTopK,
+		"main_semantic_ann_top_score":     result.SemanticANNTopScore,
+		"main_semantic_ann_top2_score":    result.SemanticANNTop2Score,
+		"main_semantic_ann_score_gap":     result.SemanticANNScoreGap,
+		"main_semantic_ann_min_score_gap": result.SemanticANNMinScoreGap,
+		"main_semantic_ann_decision":      result.SemanticANNDecision,
+		"main_semantic_fallback_reason":   result.SemanticFallbackReason,
+		"main_semantic_source":            result.SemanticSource,
+		"ann_shadow_enabled":              shadow.ShadowSemanticEnabled,
+		"ann_shadow_hit":                  shadow.ShadowSemanticHit,
+		"ann_shadow_layer":                shadow.ShadowSemanticLayer,
+		"ann_shadow_answer_id":            shadow.ShadowSemanticAnswerID,
+		"ann_shadow_answer":               shadow.ShadowSemanticAnswer,
+		"ann_shadow_top_score":            shadow.ShadowSemanticTopScore,
+		"ann_shadow_top_k":                shadow.ShadowSemanticTopK,
+		"ann_shadow_latency_ms":           shadow.ShadowSemanticLatencyMS,
+		"ann_shadow_index_source":         shadow.ShadowSemanticIndexSource,
+		"ann_shadow_index_version":        shadow.ShadowSemanticIndexVersion,
+		"ann_vs_bruteforce_same_top1":     shadow.ShadowSemanticSameTop1,
+		"ann_vs_final_answer_same":        shadow.ShadowSemanticSameAsFinal,
+		"ann_shadow_error":                shadow.ShadowSemanticError,
+		"ann_shadow_fallback_used":        shadow.ShadowSemanticFallbackUsed,
+		"ann_shadow_diff_category":        shadow.ShadowSemanticDiffCategory,
+		"ann_shadow_top_hits":             shadow.ShadowSemanticTopHits,
 	}
 	a.log.WithFields(fields).Info("ann shadow compare")
 }

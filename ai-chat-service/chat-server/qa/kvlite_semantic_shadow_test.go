@@ -74,7 +74,7 @@ func seedSemanticRecordWithVector(t *testing.T, store *KVLiteStore, backend *mem
 }
 
 func manualShadowIndexForVector(scope string, corpusLimit int, queryVector []float32, records map[string]*llm.QARecord, vectors map[string][]float32) *semanticANNIndex {
-	index := newSemanticANNIndex(scope, corpusLimit, len(queryVector))
+	index := newSemanticANNIndex(scope, corpusLimit, newSemanticEmbeddingSignature("", "manual-embedding", len(queryVector)))
 	for questionID, record := range records {
 		vector := vectors[questionID]
 		if record == nil || len(vector) == 0 {

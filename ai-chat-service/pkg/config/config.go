@@ -38,15 +38,23 @@ type Config struct {
 	Providers []provider.ProviderProfile `mapstructure:"providers"`
 	Retrieval struct {
 		Semantic struct {
-			Enabled          bool    `mapstructure:"enabled"`
-			Mode             string  `mapstructure:"mode"`
-			TopK             int     `mapstructure:"top_k"`
-			Threshold        float64 `mapstructure:"threshold"`
-			CorpusLimit      int     `mapstructure:"corpus_limit"`
-			EmbeddingModel   string  `mapstructure:"embedding_model"`
-			EmbeddingProfile string  `mapstructure:"embedding_profile"`
-			EmbeddingDim     int     `mapstructure:"embedding_dim"`
-			AsyncBackfill    bool    `mapstructure:"async_backfill"`
+			Enabled     bool    `mapstructure:"enabled"`
+			Mode        string  `mapstructure:"mode"`
+			TopK        int     `mapstructure:"top_k"`
+			Threshold   float64 `mapstructure:"threshold"`
+			CorpusLimit int     `mapstructure:"corpus_limit"`
+			ANN         struct {
+				TopK               int     `mapstructure:"top_k"`
+				MinScoreGap        float64 `mapstructure:"min_score_gap"`
+				SampleEnabled      bool    `mapstructure:"sample_enabled"`
+				SampleRate         float64 `mapstructure:"sample_rate"`
+				ExportFallbackOnly bool    `mapstructure:"export_fallback_only"`
+				ExportPath         string  `mapstructure:"export_path"`
+			} `mapstructure:"ann"`
+			EmbeddingModel   string `mapstructure:"embedding_model"`
+			EmbeddingProfile string `mapstructure:"embedding_profile"`
+			EmbeddingDim     int    `mapstructure:"embedding_dim"`
+			AsyncBackfill    bool   `mapstructure:"async_backfill"`
 			ShadowANN        struct {
 				Enabled        bool    `mapstructure:"enabled"`
 				TopK           int     `mapstructure:"top_k"`
@@ -115,6 +123,12 @@ func LoadConfig(filePath string, typ ...string) (*Config, error) {
 	v := viper.New()
 	v.SetDefault("retrieval.semantic.async_backfill", true)
 	v.SetDefault("retrieval.semantic.mode", "brute_force")
+	v.SetDefault("retrieval.semantic.ann.top_k", 3)
+	v.SetDefault("retrieval.semantic.ann.min_score_gap", 0.05)
+	v.SetDefault("retrieval.semantic.ann.sample_enabled", false)
+	v.SetDefault("retrieval.semantic.ann.sample_rate", 0.1)
+	v.SetDefault("retrieval.semantic.ann.export_fallback_only", true)
+	v.SetDefault("retrieval.semantic.ann.export_path", "")
 	v.SetDefault("retrieval.semantic.shadow_ann.enabled", false)
 	v.SetDefault("retrieval.semantic.shadow_ann.top_k", 4)
 	v.SetDefault("retrieval.semantic.shadow_ann.score_threshold", 0.8)

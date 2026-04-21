@@ -56,14 +56,27 @@ context:
     retry_backoff_ms: 50
 retrieval:
   semantic:
-    # 语义兜底实验开关。默认关闭，打开后仍然保持 exact / normalized / alias / candidate 优先。
-    enabled: false
+    # 语义兜底。默认关闭，打开后仍然保持 exact / normalized / alias / candidate 优先。
+    enabled: true
     # 语义主路径模式。brute_force 保持保守默认；ann 会优先走 ANN，失败后硬回退 brute_force。
-    mode: brute_force
+    mode: ann
     # brute-force 语义候选的 top-k 观察范围。
     top_k: 4
     # 语义命中阈值；越高越保守。
-    threshold: 0.84
+    threshold: 0.94
+    ann:
+      # direct ANN gate 使用的 top-k，默认比 general semantic top_k 更保守。
+      top_k: 3
+      # direct ANN 的最小分差阈值，太小会回退到 brute_force。
+      min_score_gap: 0.05
+      # 样本采集默认关闭；开启后建议先只采 fallback / miss。
+      sample_enabled: false
+      # 样本采样率，默认保守；仅在 sample_enabled=true 时生效。
+      sample_rate: 0.1
+      # 仅采 fallback / miss，关闭后可按比例采集全部 ANN 请求。
+      export_fallback_only: true
+      # JSONL 样本导出路径，默认留空不落盘。
+      export_path: ""
     # 限制每个 scope 内参与 brute-force 的语义候选数。
     corpus_limit: 128
     # 没有可用 embedding provider 时使用的占位模型名。

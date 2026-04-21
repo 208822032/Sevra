@@ -312,6 +312,12 @@ func TestQAPreflightSemanticResponseBuildsSemanticTrace(t *testing.T) {
 		SemanticCandidateCount:      4,
 		SemanticTopK:                3,
 		SemanticTopScore:            0.93,
+		SemanticANNTopK:             3,
+		SemanticANNTopScore:         0.93,
+		SemanticANNTop2Score:        0.89,
+		SemanticANNScoreGap:         0.04,
+		SemanticANNMinScoreGap:      0.05,
+		SemanticANNDecision:         "fallback",
 		SemanticModel:               "text-embedding-ada-002",
 		SemanticSource:              qa.SemanticRecallSourceBruteForce,
 		SemanticModeRequested:       qa.SemanticRecallModeANN,
@@ -361,6 +367,9 @@ func TestQAPreflightSemanticResponseBuildsSemanticTrace(t *testing.T) {
 	if unaryMeta.Trace.SemanticTopScore != 0.93 {
 		t.Fatalf("unexpected semantic top score: %+v", unaryMeta.Trace)
 	}
+	if unaryMeta.Trace.SemanticANNTopK != 3 || unaryMeta.Trace.SemanticANNTopScore != 0.93 || unaryMeta.Trace.SemanticANNTop2Score != 0.89 || unaryMeta.Trace.SemanticANNScoreGap != 0.04 || unaryMeta.Trace.SemanticANNMinScoreGap != 0.05 || unaryMeta.Trace.SemanticANNDecision != "fallback" {
+		t.Fatalf("unexpected semantic ANN trace fields: %+v", unaryMeta.Trace)
+	}
 	if unaryMeta.Trace.SemanticModel != "text-embedding-ada-002" || unaryMeta.Trace.SemanticSource != qa.SemanticRecallSourceBruteForce {
 		t.Fatalf("unexpected semantic model/source: %+v", unaryMeta.Trace)
 	}
@@ -389,6 +398,9 @@ func TestQAPreflightSemanticResponseBuildsSemanticTrace(t *testing.T) {
 	}
 	if streamMeta.Trace.SemanticTopScore != 0.93 {
 		t.Fatalf("unexpected semantic stream top score: %+v", streamMeta.Trace)
+	}
+	if streamMeta.Trace.SemanticANNTopK != 3 || streamMeta.Trace.SemanticANNTopScore != 0.93 || streamMeta.Trace.SemanticANNTop2Score != 0.89 || streamMeta.Trace.SemanticANNScoreGap != 0.04 || streamMeta.Trace.SemanticANNMinScoreGap != 0.05 || streamMeta.Trace.SemanticANNDecision != "fallback" {
+		t.Fatalf("unexpected semantic stream ANN fields: %+v", streamMeta.Trace)
 	}
 	if streamMeta.Trace.SemanticModel != "text-embedding-ada-002" || streamMeta.Trace.SemanticSource != qa.SemanticRecallSourceBruteForce {
 		t.Fatalf("unexpected semantic stream model/source: %+v", streamMeta.Trace)

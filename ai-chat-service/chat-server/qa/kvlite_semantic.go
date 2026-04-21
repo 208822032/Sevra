@@ -14,6 +14,7 @@ import (
 
 type semanticProviderSelection struct {
 	provider llm.EmbeddingProvider
+	profile  string
 	model    string
 }
 
@@ -23,6 +24,7 @@ func semanticConfigFromConfig(cnf *config.Config) SemanticConfig {
 		TopK:          DefaultSemanticTopK,
 		Threshold:     DefaultSemanticMinScore,
 		CorpusLimit:   DefaultSemanticCorpusLimit,
+		ANN:           SemanticANNConfig{TopK: DefaultSemanticANNTopK, MinScoreGap: DefaultSemanticANNMinScoreGap, SampleRate: DefaultSemanticANNSampleRate, ExportFallbackOnly: DefaultSemanticANNExportFallbackOnly},
 		EmbeddingDim:  DefaultSemanticEmbeddingDim,
 		AsyncBackfill: true,
 	}
@@ -40,8 +42,28 @@ func semanticConfigFromConfig(cnf *config.Config) SemanticConfig {
 	if semantic.CorpusLimit > 0 {
 		cfg.CorpusLimit = semantic.CorpusLimit
 	}
+	if semantic.ANN.TopK > 0 {
+		cfg.ANN.TopK = semantic.ANN.TopK
+	}
+	if semantic.ANN.MinScoreGap > 0 {
+		cfg.ANN.MinScoreGap = semantic.ANN.MinScoreGap
+	}
+	cfg.ANN.SampleEnabled = semantic.ANN.SampleEnabled
+	if semantic.ANN.SampleRate > 0 {
+		cfg.ANN.SampleRate = semantic.ANN.SampleRate
+	}
+	if cfg.ANN.SampleRate > 1 {
+		cfg.ANN.SampleRate = 1
+	}
+	cfg.ANN.ExportFallbackOnly = semantic.ANN.ExportFallbackOnly
+	if strings.TrimSpace(semantic.ANN.ExportPath) != "" {
+		cfg.ANN.ExportPath = strings.TrimSpace(semantic.ANN.ExportPath)
+	}
 	if strings.TrimSpace(semantic.EmbeddingModel) != "" {
 		cfg.EmbeddingModel = strings.TrimSpace(semantic.EmbeddingModel)
+	}
+	if strings.TrimSpace(semantic.EmbeddingProfile) != "" {
+		cfg.EmbeddingProfile = strings.TrimSpace(semantic.EmbeddingProfile)
 	}
 	if semantic.EmbeddingDim > 0 {
 		cfg.EmbeddingDim = semantic.EmbeddingDim
@@ -52,13 +74,31 @@ func semanticConfigFromConfig(cnf *config.Config) SemanticConfig {
 
 func selectSemanticEmbeddingProvider(cnf *config.Config, cfg SemanticConfig) semanticProviderSelection {
 	selection := semanticProviderSelection{
-		model: firstNonEmpty(cfg.EmbeddingModel, "placeholder-hash-embedding"),
+		profile: firstNonEmpty(cfg.EmbeddingProfile, cfg.EmbeddingModel, "placeholder-hash-embedding"),
+		model:   firstNonEmpty(cfg.EmbeddingModel, "placeholder-hash-embedding"),
 	}
 	if cnf == nil {
 		selection.provider = NewHashEmbeddingProvider(selection.model, cfg.EmbeddingDim)
 		return selection
 	}
 	registry := provider.NewRegistry(cnf.ProviderProfiles())
+	requestedProfile := strings.TrimSpace(cnf.Retrieval.Semantic.EmbeddingProfile)
+	if requestedProfile != "" {
+		selection.profile = requestedProfile
+	}
+	if requestedProfile != "" {
+		if candidateProvider, profile, ok := registry.ProfileByName(requestedProfile); ok && profile.SupportsEmbeddings {
+			if embeddingProvider, ok := candidateProvider.(llm.EmbeddingProvider); ok {
+				selection.provider = embeddingProvider
+				selection.profile = profile.Name
+				selection.model = firstNonEmpty(profile.EmbeddingModel, profile.DefaultEmbeddingModel, cfg.EmbeddingModel, profile.Name)
+				if strings.TrimSpace(selection.model) == "" {
+					selection.model = profile.Name
+				}
+				return selection
+			}
+		}
+	}
 	for _, name := range registry.ProfileNames() {
 		candidateProvider, profile, ok := registry.ProfileByName(name)
 		if !ok || candidateProvider == nil || !profile.SupportsEmbeddings {
@@ -69,13 +109,17 @@ func selectSemanticEmbeddingProvider(cnf *config.Config, cfg SemanticConfig) sem
 			continue
 		}
 		selection.provider = embeddingProvider
-		selection.model = firstNonEmpty(cfg.EmbeddingModel, profile.EmbeddingModel, profile.DefaultEmbeddingModel, profile.Name)
+		selection.profile = profile.Name
+		selection.model = firstNonEmpty(profile.EmbeddingModel, profile.DefaultEmbeddingModel, cfg.EmbeddingModel, profile.Name)
 		if strings.TrimSpace(selection.model) == "" {
 			selection.model = profile.Name
 		}
 		return selection
 	}
 	selection.provider = NewHashEmbeddingProvider(selection.model, cfg.EmbeddingDim)
+	if strings.TrimSpace(selection.profile) == "" {
+		selection.profile = firstNonEmpty(requestedProfile, cfg.EmbeddingProfile, selection.model)
+	}
 	return selection
 }
 
@@ -99,6 +143,28 @@ func (s *KVLiteStore) applySemanticConfig(cfg SemanticConfig) {
 	} else if s.semanticCorpusLimit <= 0 {
 		s.semanticCorpusLimit = DefaultSemanticCorpusLimit
 	}
+	if cfg.ANN.TopK > 0 {
+		s.semanticANNTopK = cfg.ANN.TopK
+	} else if s.semanticANNTopK <= 0 {
+		s.semanticANNTopK = DefaultSemanticANNTopK
+	}
+	if cfg.ANN.MinScoreGap > 0 {
+		if cfg.ANN.MinScoreGap > 1 {
+			cfg.ANN.MinScoreGap = 1
+		}
+		s.semanticANNMinScoreGap = cfg.ANN.MinScoreGap
+	} else if s.semanticANNMinScoreGap <= 0 {
+		s.semanticANNMinScoreGap = DefaultSemanticANNMinScoreGap
+	}
+	if s.semanticANNAudit != nil {
+		_ = s.semanticANNAudit.Close()
+	}
+	s.semanticANNAudit = newSemanticANNAuditTrail(SemanticANNAuditConfig{
+		SampleEnabled:      cfg.ANN.SampleEnabled,
+		SampleRate:         cfg.ANN.SampleRate,
+		ExportFallbackOnly: cfg.ANN.ExportFallbackOnly,
+		ExportPath:         cfg.ANN.ExportPath,
+	})
 	if cfg.EmbeddingDim > 0 {
 		s.semanticEmbeddingDim = cfg.EmbeddingDim
 	} else if s.semanticEmbeddingDim <= 0 {
@@ -108,6 +174,11 @@ func (s *KVLiteStore) applySemanticConfig(cfg SemanticConfig) {
 		s.semanticModel = strings.TrimSpace(cfg.EmbeddingModel)
 	} else if strings.TrimSpace(s.semanticModel) == "" {
 		s.semanticModel = "placeholder-hash-embedding"
+	}
+	if strings.TrimSpace(cfg.EmbeddingProfile) != "" {
+		s.semanticEmbeddingProfile = strings.TrimSpace(cfg.EmbeddingProfile)
+	} else if strings.TrimSpace(s.semanticEmbeddingProfile) == "" {
+		s.semanticEmbeddingProfile = firstNonEmpty(s.semanticModel, "placeholder-hash-embedding")
 	}
 	if s.semanticEnabled && s.semanticProvider == nil {
 		s.semanticProvider = NewHashEmbeddingProvider(s.semanticModel, s.semanticEmbeddingDim)
@@ -132,6 +203,16 @@ func (s *KVLiteStore) initSemanticProvider(cnf *config.Config) {
 	if strings.TrimSpace(selection.model) != "" {
 		s.semanticModel = selection.model
 	}
+	if strings.TrimSpace(selection.profile) != "" {
+		s.semanticEmbeddingProfile = selection.profile
+	}
+}
+
+func (s *KVLiteStore) semanticEmbeddingSignature() semanticEmbeddingSignature {
+	if s == nil {
+		return newSemanticEmbeddingSignature("", "", 0)
+	}
+	return newSemanticEmbeddingSignature(s.semanticEmbeddingProfile, s.semanticModel, s.semanticEmbeddingDim)
 }
 
 func (s *KVLiteStore) BackfillSemanticEmbedding(ctx context.Context, record *llm.QARecord) error {
@@ -163,10 +244,12 @@ func (s *KVLiteStore) BackfillSemanticEmbedding(ctx context.Context, record *llm
 	}
 	vector := vectors[0]
 	now := time.Now().Unix()
+	profile := firstNonEmpty(s.semanticEmbeddingProfile, provider.Name())
 	ref := semanticEmbeddingKey(questionID)
 	payload := semanticEmbeddingPayload{
 		Model:     firstNonEmpty(s.semanticModel, record.EmbeddingModel, provider.Name()),
 		Provider:  provider.Name(),
+		Profile:   profile,
 		Dim:       len(vector),
 		Vector:    append([]float32(nil), vector...),
 		UpdatedAt: now,
@@ -187,6 +270,7 @@ func (s *KVLiteStore) BackfillSemanticEmbedding(ctx context.Context, record *llm
 		stored.Metadata = map[string]string{}
 	}
 	stored.Metadata["embedding_model"] = payload.Model
+	stored.Metadata["embedding_profile"] = profile
 	stored.Metadata["embedding_status"] = stored.EmbeddingStatus
 	stored.Metadata["embedding_dim"] = fmt.Sprintf("%d", payload.Dim)
 	stored.Metadata["embedding_updated_at"] = fmt.Sprintf("%d", now)
@@ -291,6 +375,40 @@ func applySemanticLookupOutcome(result *LookupResult, requestedMode, usedMode st
 	if semanticSource != "" {
 		result.Metadata["semantic_source"] = semanticSource
 	}
+	if result.SemanticANNDecision != "" {
+		result.Metadata["semantic_ann_top_k"] = fmt.Sprintf("%d", result.SemanticANNTopK)
+		result.Metadata["semantic_ann_top_score"] = fmt.Sprintf("%.4f", result.SemanticANNTopScore)
+		if result.SemanticANNTop2Score != 0 {
+			result.Metadata["semantic_ann_top2_score"] = fmt.Sprintf("%.4f", result.SemanticANNTop2Score)
+		}
+		if result.SemanticANNScoreGap != 0 {
+			result.Metadata["semantic_ann_score_gap"] = fmt.Sprintf("%.4f", result.SemanticANNScoreGap)
+		}
+		result.Metadata["semantic_ann_min_score_gap"] = fmt.Sprintf("%.4f", result.SemanticANNMinScoreGap)
+		result.Metadata["semantic_ann_decision"] = result.SemanticANNDecision
+	}
+}
+
+func mergeSemanticANNDiagnostics(dst *LookupResult, src LookupResult) {
+	if dst == nil {
+		return
+	}
+	if src.SemanticANNDecision == "" && src.SemanticANNTopK == 0 && src.SemanticANNTopScore == 0 && src.SemanticANNTop2Score == 0 && src.SemanticANNScoreGap == 0 && src.SemanticANNMinScoreGap == 0 && src.SemanticCandidateCount == 0 {
+		return
+	}
+	dst.SemanticCandidateCount = src.SemanticCandidateCount
+	dst.SemanticANNTopK = src.SemanticANNTopK
+	dst.SemanticANNTopScore = src.SemanticANNTopScore
+	dst.SemanticANNTop2Score = src.SemanticANNTop2Score
+	dst.SemanticANNScoreGap = src.SemanticANNScoreGap
+	dst.SemanticANNMinScoreGap = src.SemanticANNMinScoreGap
+	dst.SemanticANNDecision = src.SemanticANNDecision
+	if dst.Metadata == nil {
+		dst.Metadata = map[string]string{}
+	}
+	if src.SemanticCandidateCount > 0 {
+		dst.Metadata["semantic_candidate_count"] = fmt.Sprintf("%d", src.SemanticCandidateCount)
+	}
 }
 
 func (s *KVLiteStore) lookupBySemanticANNWithVector(ctx context.Context, req LookupRequest, queryVector []float32) (LookupResult, bool, error) {
@@ -303,17 +421,24 @@ func (s *KVLiteStore) lookupBySemanticANNWithVector(ctx context.Context, req Loo
 	annLatency := time.Since(annStart)
 	if !shouldFallback && annErr == nil {
 		applySemanticLookupOutcome(&annResult, requestedMode, SemanticRecallModeANN, false, "", SemanticRecallSourceANNBucketedLSH, annLatency, 0, annLatency)
+		s.observeSemanticANNOutcome(req, annResult)
 		return annResult, annHit, nil
+	}
+	if fallbackReason != "" {
+		fallbackReason = semanticANNDirectFallbackReason(fallbackReason)
 	}
 	bruteForceStart := time.Now()
 	bruteForceResult, bruteForceHit, bruteForceErr := s.lookupBySemanticBruteForceWithVector(ctx, req, queryVector)
 	bruteForceLatency := time.Since(bruteForceStart)
 	totalLatency := annLatency + bruteForceLatency
+	mergeSemanticANNDiagnostics(&bruteForceResult, annResult)
 	if bruteForceErr != nil {
 		applySemanticLookupOutcome(&bruteForceResult, requestedMode, SemanticRecallModeBruteForce, true, fallbackReason, semanticANNFallbackSource, annLatency, bruteForceLatency, totalLatency)
+		s.observeSemanticANNOutcome(req, bruteForceResult)
 		return bruteForceResult, bruteForceHit, bruteForceErr
 	}
 	applySemanticLookupOutcome(&bruteForceResult, requestedMode, SemanticRecallModeBruteForce, true, fallbackReason, semanticANNFallbackSource, annLatency, bruteForceLatency, totalLatency)
+	s.observeSemanticANNOutcome(req, bruteForceResult)
 	if annErr != nil {
 		return bruteForceResult, bruteForceHit, nil
 	}
@@ -325,15 +450,18 @@ func (s *KVLiteStore) lookupBySemanticANNDirectWithVector(ctx context.Context, r
 		return LookupResult{Hit: false}, false, false, "", nil
 	}
 	if len(queryVector) == 0 {
-		return LookupResult{Hit: false}, false, true, "ann_query_vector_empty", nil
+		return LookupResult{Hit: false, SemanticANNDecision: semanticANNDecisionMiss, SemanticANNMinScoreGap: s.semanticANNMinScoreGap, SemanticANNTopK: s.semanticANNTopK}, false, true, "ann_query_vector_empty", nil
 	}
 	scope := effectiveLookupScope(req)
-	topK := req.SemanticTopK
+	topK := req.SemanticANNTopK
 	if topK <= 0 {
-		topK = s.semanticTopK
+		topK = req.SemanticTopK
 	}
 	if topK <= 0 {
-		topK = DefaultSemanticTopK
+		topK = s.semanticANNTopK
+	}
+	if topK <= 0 {
+		topK = DefaultSemanticANNTopK
 	}
 	threshold := req.SemanticThreshold
 	if threshold <= 0 {
@@ -341,6 +469,13 @@ func (s *KVLiteStore) lookupBySemanticANNDirectWithVector(ctx context.Context, r
 	}
 	if threshold <= 0 {
 		threshold = DefaultSemanticMinScore
+	}
+	minScoreGap := req.SemanticANNMinScoreGap
+	if minScoreGap <= 0 {
+		minScoreGap = s.semanticANNMinScoreGap
+	}
+	if minScoreGap <= 0 {
+		minScoreGap = DefaultSemanticANNMinScoreGap
 	}
 	corpusLimit := req.SemanticCorpusLimit
 	if corpusLimit <= 0 {
@@ -351,20 +486,36 @@ func (s *KVLiteStore) lookupBySemanticANNDirectWithVector(ctx context.Context, r
 	}
 	index, err := s.ensureSemanticANNIndex(ctx, scope, corpusLimit)
 	if err != nil {
-		return LookupResult{}, false, true, fmt.Sprintf("ann_index_load_error: %v", err), err
+		return LookupResult{Hit: false, SemanticANNDecision: semanticANNDecisionMiss, SemanticANNMinScoreGap: minScoreGap, SemanticANNTopK: topK}, false, true, fmt.Sprintf("ann_index_load_error: %v", err), err
+	}
+	annResult := LookupResult{
+		SemanticANNTopK:        topK,
+		SemanticANNMinScoreGap: minScoreGap,
+		SemanticANNDecision:    semanticANNDecisionMiss,
 	}
 	if index == nil || len(index.Entries) == 0 {
-		return LookupResult{Hit: false}, false, true, "ann_index_missing", nil
+		return annResult, false, true, semanticANNReasonNoCandidates, nil
 	}
-	best, candidateCount, ok, queryErr := index.bestMatch(queryVector)
+	hits, candidateCount, queryErr := index.queryTopMatches(queryVector, topK)
 	if queryErr != nil {
-		return LookupResult{}, false, true, fmt.Sprintf("ann_query_error: %v", queryErr), queryErr
+		return annResult, false, true, fmt.Sprintf("ann_query_error: %v", queryErr), queryErr
 	}
-	if !ok || best.Record == nil {
-		return LookupResult{Hit: false}, false, true, "ann_no_result", nil
+	if candidateCount == 0 || len(hits) == 0 {
+		return annResult, false, true, semanticANNReasonNoCandidates, nil
 	}
-	if best.Score < threshold {
-		return LookupResult{Hit: false}, false, true, "ann_low_score", nil
+	if gateReason := semanticANNDirectGateReason(hits, threshold, minScoreGap); gateReason != "" {
+		annResult.SemanticANNTopScore = hits[0].Score
+		annResult.SemanticCandidateCount = candidateCount
+		annResult.SemanticANNDecision = semanticANNDecisionFallback
+		if len(hits) > 1 {
+			annResult.SemanticANNTop2Score = hits[1].Score
+			annResult.SemanticANNScoreGap = hits[0].Score - hits[1].Score
+		}
+		return annResult, false, true, gateReason, nil
+	}
+	best := hits[0]
+	if best.Record == nil {
+		return annResult, false, true, semanticANNReasonNoCandidates, nil
 	}
 	result := lookupResultFromRecord(best.Record)
 	result.Hit = true
@@ -372,6 +523,10 @@ func (s *KVLiteStore) lookupBySemanticANNDirectWithVector(ctx context.Context, r
 	result.SemanticCandidateCount = candidateCount
 	result.SemanticTopK = topK
 	result.SemanticTopScore = best.Score
+	result.SemanticANNTopK = topK
+	result.SemanticANNTopScore = best.Score
+	result.SemanticANNMinScoreGap = minScoreGap
+	result.SemanticANNDecision = semanticANNDecisionHit
 	result.SemanticModel = firstNonEmpty(best.Model, s.semanticModel, best.Record.EmbeddingModel)
 	result.SemanticSource = SemanticRecallSourceANNBucketedLSH
 	if result.Metadata == nil {
@@ -382,6 +537,16 @@ func (s *KVLiteStore) lookupBySemanticANNDirectWithVector(ctx context.Context, r
 	result.Metadata["semantic_candidate_count"] = fmt.Sprintf("%d", candidateCount)
 	result.Metadata["semantic_top_k"] = fmt.Sprintf("%d", topK)
 	result.Metadata["semantic_top_score"] = fmt.Sprintf("%.4f", best.Score)
+	result.Metadata["semantic_ann_top_k"] = fmt.Sprintf("%d", topK)
+	result.Metadata["semantic_ann_top_score"] = fmt.Sprintf("%.4f", best.Score)
+	result.Metadata["semantic_ann_min_score_gap"] = fmt.Sprintf("%.4f", minScoreGap)
+	result.Metadata["semantic_ann_decision"] = semanticANNDecisionHit
+	if len(hits) > 1 {
+		result.SemanticANNTop2Score = hits[1].Score
+		result.SemanticANNScoreGap = best.Score - hits[1].Score
+		result.Metadata["semantic_ann_top2_score"] = fmt.Sprintf("%.4f", hits[1].Score)
+		result.Metadata["semantic_ann_score_gap"] = fmt.Sprintf("%.4f", best.Score-hits[1].Score)
+	}
 	result.Metadata["semantic_model"] = result.SemanticModel
 	result.Metadata["semantic_source"] = SemanticRecallSourceANNBucketedLSH
 	return result, true, false, "", nil

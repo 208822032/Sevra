@@ -202,6 +202,12 @@ type AnswerTrace struct {
 	SemanticCandidateCount      int            `json:"semantic_candidate_count,omitempty"`
 	SemanticTopK                int            `json:"semantic_top_k,omitempty"`
 	SemanticTopScore            float64        `json:"semantic_top_score,omitempty"`
+	SemanticANNTopK             int            `json:"semantic_ann_top_k,omitempty"`
+	SemanticANNTopScore         float64        `json:"semantic_ann_top_score,omitempty"`
+	SemanticANNTop2Score        float64        `json:"semantic_ann_top2_score,omitempty"`
+	SemanticANNScoreGap         float64        `json:"semantic_ann_score_gap,omitempty"`
+	SemanticANNMinScoreGap      float64        `json:"semantic_ann_min_score_gap,omitempty"`
+	SemanticANNDecision         string         `json:"semantic_ann_decision,omitempty"`
 	SemanticModel               string         `json:"semantic_model,omitempty"`
 	SemanticSource              string         `json:"semantic_source,omitempty"`
 	SemanticModeRequested       string         `json:"semantic_mode_requested,omitempty"`

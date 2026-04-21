@@ -161,7 +161,7 @@ func TestParseAndMergeResponseMetaPreserveCandidateTrace(t *testing.T) {
 }
 
 func TestParseAndMergeResponseMetaPreserveSemanticTrace(t *testing.T) {
-	traceJSON := `{"answer_mode":"cache_hit","provider":"deepseek","model":"deepseek-chat","answer_source_kind":"cache","qa_hit_type":"semantic","semantic_candidate_count":4,"semantic_top_k":3,"semantic_top_score":0.93,"semantic_mode_requested":"ann","semantic_mode_used":"brute_force","semantic_fallback_used":true,"semantic_fallback_reason":"ann_index_missing","semantic_latency_ms":12.5,"semantic_ann_latency_ms":4.2,"semantic_brute_force_latency_ms":8.3,"semantic_model":"text-embedding-ada-002","semantic_source":"bruteforce_cosine","final_answer_source":"qa_semantic","retrieved_hits":[{"record_id":"qa-7","score":0.93,"hit_type":"semantic","question_preview":"How do I reset the cache safely?","answer_preview":"semantic answer","provider":"deepseek","model":"deepseek-chat"}]}`
+	traceJSON := `{"answer_mode":"cache_hit","provider":"deepseek","model":"deepseek-chat","answer_source_kind":"cache","qa_hit_type":"semantic","semantic_candidate_count":4,"semantic_top_k":3,"semantic_top_score":0.93,"semantic_ann_top_k":3,"semantic_ann_top_score":0.93,"semantic_ann_top2_score":0.89,"semantic_ann_score_gap":0.04,"semantic_ann_min_score_gap":0.05,"semantic_ann_decision":"fallback","semantic_mode_requested":"ann","semantic_mode_used":"brute_force","semantic_fallback_used":true,"semantic_fallback_reason":"ann_index_missing","semantic_latency_ms":12.5,"semantic_ann_latency_ms":4.2,"semantic_brute_force_latency_ms":8.3,"semantic_model":"text-embedding-ada-002","semantic_source":"bruteforce_cosine","final_answer_source":"qa_semantic","retrieved_hits":[{"record_id":"qa-7","score":0.93,"hit_type":"semantic","question_preview":"How do I reset the cache safely?","answer_preview":"semantic answer","provider":"deepseek","model":"deepseek-chat"}]}`
 	meta := parseResponseMeta(metadata.Pairs("x-ai-trace", traceJSON))
 	if meta == nil {
 		t.Fatalf("expected response meta")
@@ -171,6 +171,9 @@ func TestParseAndMergeResponseMetaPreserveSemanticTrace(t *testing.T) {
 	}
 	if meta.Trace.SemanticTopScore != 0.93 {
 		t.Fatalf("unexpected semantic top score: %+v", meta.Trace)
+	}
+	if meta.Trace.SemanticANNTopK != 3 || meta.Trace.SemanticANNTopScore != 0.93 || meta.Trace.SemanticANNTop2Score != 0.89 || meta.Trace.SemanticANNScoreGap != 0.04 || meta.Trace.SemanticANNMinScoreGap != 0.05 || meta.Trace.SemanticANNDecision != "fallback" {
+		t.Fatalf("unexpected semantic ANN fields: %+v", meta.Trace)
 	}
 	if meta.Trace.SemanticModel != "text-embedding-ada-002" || meta.Trace.SemanticSource != "bruteforce_cosine" {
 		t.Fatalf("unexpected semantic model/source: %+v", meta.Trace)
@@ -198,6 +201,9 @@ func TestParseAndMergeResponseMetaPreserveSemanticTrace(t *testing.T) {
 	}
 	if message.Trace.SemanticTopScore != 0.93 {
 		t.Fatalf("unexpected merged semantic top score: %+v", message.Trace)
+	}
+	if message.Trace.SemanticANNTopK != 3 || message.Trace.SemanticANNTopScore != 0.93 || message.Trace.SemanticANNTop2Score != 0.89 || message.Trace.SemanticANNScoreGap != 0.04 || message.Trace.SemanticANNMinScoreGap != 0.05 || message.Trace.SemanticANNDecision != "fallback" {
+		t.Fatalf("unexpected merged semantic ANN fields: %+v", message.Trace)
 	}
 	if message.Trace.SemanticModel != "text-embedding-ada-002" || message.Trace.SemanticSource != "bruteforce_cosine" {
 		t.Fatalf("unexpected merged semantic model/source: %+v", message.Trace)

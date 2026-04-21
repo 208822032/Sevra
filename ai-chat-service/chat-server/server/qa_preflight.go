@@ -42,6 +42,8 @@ func (a *app) tryQAPreflight(ctx context.Context, in *proto.ChatCompletionReques
 	semanticMode := qa.SemanticRecallModeBruteForce
 	semanticTopK := qa.DefaultSemanticTopK
 	semanticThreshold := qa.DefaultSemanticMinScore
+	semanticANNTopK := qa.DefaultSemanticANNTopK
+	semanticANNMinScoreGap := qa.DefaultSemanticANNMinScoreGap
 	semanticModel := ""
 	semanticEmbeddingDim := qa.DefaultSemanticEmbeddingDim
 	semanticCorpusLimit := qa.DefaultSemanticCorpusLimit
@@ -54,6 +56,12 @@ func (a *app) tryQAPreflight(ctx context.Context, in *proto.ChatCompletionReques
 		}
 		if cfg.Retrieval.Semantic.Threshold > 0 {
 			semanticThreshold = cfg.Retrieval.Semantic.Threshold
+		}
+		if cfg.Retrieval.Semantic.ANN.TopK > 0 {
+			semanticANNTopK = cfg.Retrieval.Semantic.ANN.TopK
+		}
+		if cfg.Retrieval.Semantic.ANN.MinScoreGap > 0 {
+			semanticANNMinScoreGap = cfg.Retrieval.Semantic.ANN.MinScoreGap
 		}
 		if strings.TrimSpace(cfg.Retrieval.Semantic.EmbeddingModel) != "" {
 			semanticModel = strings.TrimSpace(cfg.Retrieval.Semantic.EmbeddingModel)
@@ -82,6 +90,8 @@ func (a *app) tryQAPreflight(ctx context.Context, in *proto.ChatCompletionReques
 		SemanticMode:           semanticMode,
 		SemanticTopK:           semanticTopK,
 		SemanticThreshold:      semanticThreshold,
+		SemanticANNTopK:        semanticANNTopK,
+		SemanticANNMinScoreGap: semanticANNMinScoreGap,
 		SemanticModel:          semanticModel,
 		SemanticEmbeddingDim:   semanticEmbeddingDim,
 		SemanticCorpusLimit:    semanticCorpusLimit,
@@ -102,6 +112,7 @@ func (a *app) tryQAPreflight(ctx context.Context, in *proto.ChatCompletionReques
 	a.qaLookupResult = result
 	a.semanticShadowQuery = question
 	a.semanticShadowRequestID = in.GetId()
+	a.logSemanticLookupResult(in, result)
 	if !result.Hit || strings.TrimSpace(result.Answer) == "" {
 		return false, qa.LookupResult{}, nil
 	}
@@ -109,6 +120,42 @@ func (a *app) tryQAPreflight(ctx context.Context, in *proto.ChatCompletionReques
 		result.HitType = qa.HitTypeExact
 	}
 	return true, result, nil
+}
+
+func (a *app) logSemanticLookupResult(in *proto.ChatCompletionRequest, result qa.LookupResult) {
+	if a == nil || a.log == nil {
+		return
+	}
+	if strings.TrimSpace(result.SemanticModeRequested) == "" && strings.TrimSpace(result.SemanticANNDecision) == "" && strings.TrimSpace(result.SemanticFallbackReason) == "" && result.SemanticTopScore == 0 && result.SemanticANNTopScore == 0 && result.SemanticCandidateCount == 0 {
+		return
+	}
+	fields := map[string]interface{}{
+		"request_id":                 in.GetId(),
+		"session_id":                 in.GetSessionId(),
+		"question":                   strings.TrimSpace(in.GetMessage()),
+		"qa_hit_type":                result.HitType,
+		"semantic_mode_requested":    result.SemanticModeRequested,
+		"semantic_mode_used":         result.SemanticModeUsed,
+		"semantic_candidate_count":   result.SemanticCandidateCount,
+		"semantic_top_k":             result.SemanticTopK,
+		"semantic_top_score":         result.SemanticTopScore,
+		"semantic_ann_top_k":         result.SemanticANNTopK,
+		"semantic_ann_top_score":     result.SemanticANNTopScore,
+		"semantic_ann_min_score_gap": result.SemanticANNMinScoreGap,
+		"semantic_ann_decision":      result.SemanticANNDecision,
+		"semantic_fallback_used":     result.SemanticFallbackUsed,
+		"semantic_fallback_reason":   result.SemanticFallbackReason,
+		"semantic_source":            result.SemanticSource,
+		"semantic_model":             result.SemanticModel,
+		"semantic_hit":               result.Hit,
+	}
+	if result.SemanticANNTop2Score != 0 {
+		fields["semantic_ann_top2_score"] = result.SemanticANNTop2Score
+	}
+	if result.SemanticANNScoreGap != 0 {
+		fields["semantic_ann_score_gap"] = result.SemanticANNScoreGap
+	}
+	a.log.WithFields(fields).Info("qa semantic lookup")
 }
 
 func (a *app) buildQAPreflightUnaryResponse(ctx context.Context, in *proto.ChatCompletionRequest, result qa.LookupResult) (*proto.ChatCompletionResponse, llm.ResponseMeta, error) {
@@ -256,6 +303,12 @@ func (a *app) buildQAPreflightTrace(result qa.LookupResult) llm.AnswerTrace {
 		SemanticCandidateCount: result.SemanticCandidateCount,
 		SemanticTopK:           result.SemanticTopK,
 		SemanticTopScore:       result.SemanticTopScore,
+		SemanticANNTopK:        result.SemanticANNTopK,
+		SemanticANNTopScore:    result.SemanticANNTopScore,
+		SemanticANNTop2Score:   result.SemanticANNTop2Score,
+		SemanticANNScoreGap:    result.SemanticANNScoreGap,
+		SemanticANNMinScoreGap: result.SemanticANNMinScoreGap,
+		SemanticANNDecision:    result.SemanticANNDecision,
 		SemanticModel:          result.SemanticModel,
 		SemanticSource:         semanticSource,
 		FinalAnswerSource:      finalAnswerSource,

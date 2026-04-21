@@ -26,13 +26,17 @@ type KVLiteStore struct {
 	namespace  string
 	defaultTTL time.Duration
 
-	semanticEnabled      bool
-	semanticTopK         int
-	semanticThreshold    float64
-	semanticCorpusLimit  int
-	semanticEmbeddingDim int
-	semanticModel        string
-	semanticProvider     llm.EmbeddingProvider
+	semanticEnabled          bool
+	semanticTopK             int
+	semanticThreshold        float64
+	semanticANNTopK          int
+	semanticANNMinScoreGap   float64
+	semanticCorpusLimit      int
+	semanticEmbeddingDim     int
+	semanticEmbeddingProfile string
+	semanticModel            string
+	semanticProvider         llm.EmbeddingProvider
+	semanticANNAudit         *SemanticANNAuditTrail
 
 	semanticANNCacheMu sync.RWMutex
 	semanticANNCache   map[string]*semanticANNIndex
@@ -87,9 +91,12 @@ func WithKVLiteSemanticConfig(cfg SemanticConfig) KVLiteOption {
 
 func NewKVLiteStore(cnf *config.Config, options ...KVLiteOption) (Store, error) {
 	store := &KVLiteStore{
-		namespace:        defaultQANamespace(cnf),
-		defaultTTL:       defaultQATTL(cnf),
-		semanticANNCache: make(map[string]*semanticANNIndex),
+		namespace:              defaultQANamespace(cnf),
+		defaultTTL:             defaultQATTL(cnf),
+		semanticANNTopK:        DefaultSemanticANNTopK,
+		semanticANNMinScoreGap: DefaultSemanticANNMinScoreGap,
+		semanticANNAudit:       newSemanticANNAuditTrail(SemanticANNAuditConfig{}),
+		semanticANNCache:       make(map[string]*semanticANNIndex),
 	}
 	if cnf != nil {
 		store.applySemanticConfig(semanticConfigFromConfig(cnf))
@@ -114,10 +121,13 @@ func NewKVLiteStore(cnf *config.Config, options ...KVLiteOption) (Store, error) 
 
 func NewKVLiteStoreWithBackend(backend kvliteBackend, namespace string, ttl time.Duration, options ...KVLiteOption) Store {
 	store := &KVLiteStore{
-		backend:          backend,
-		namespace:        normalizeQANamespace(namespace),
-		defaultTTL:       ttl,
-		semanticANNCache: make(map[string]*semanticANNIndex),
+		backend:                backend,
+		namespace:              normalizeQANamespace(namespace),
+		defaultTTL:             ttl,
+		semanticANNTopK:        DefaultSemanticANNTopK,
+		semanticANNMinScoreGap: DefaultSemanticANNMinScoreGap,
+		semanticANNAudit:       newSemanticANNAuditTrail(SemanticANNAuditConfig{}),
+		semanticANNCache:       make(map[string]*semanticANNIndex),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -136,7 +146,13 @@ func (s *KVLiteStore) Name() string {
 
 func (s *KVLiteStore) Close() error {
 	if s == nil || s.backend == nil {
+		if s != nil && s.semanticANNAudit != nil {
+			_ = s.semanticANNAudit.Close()
+		}
 		return nil
+	}
+	if s.semanticANNAudit != nil {
+		_ = s.semanticANNAudit.Close()
 	}
 	return s.backend.Close()
 }
