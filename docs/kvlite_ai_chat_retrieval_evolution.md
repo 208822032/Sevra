@@ -1,5 +1,9 @@
 # 多模型 AI-chat + KVLite 语义检索演进方案
 
+> 历史方案说明：本文描述的 `vector-data`、QARecord、候选桶、LSH/ANN 与 mock embedding
+> 已在阶段 3 删除，不再是可运行架构。当前迁移的唯一实施清单是
+> [`docs/KV/kvlite_vector_backend_development.md`](KV/kvlite_vector_backend_development.md)。
+
 本方案以当前仓库真实实现为基线，目标不是把项目一次性做成完整平台，而是沿着“最小正确演进”把系统升级成一个可解释、可缓存、可检索、可展示来源的多模型 AI-chat 系统。
 
 当前仓库已经具备 OpenAI-compatible 调用链、流式响应、session/context 存储、KVLite 兼容层、MySQL 落库、关键词/向量外部索引和前端流式渲染基础；缺的是统一 provider 抽象、回答路由策略、QARecord 级别的本地知识缓存、真正的语义检索、以及面向前端的来源解释字段。

@@ -220,15 +220,6 @@ dependOn:
     accessToken: test
   tokenizer:
     address: %s
-vectorDB:
-  url: http://localhost:60000
-  username: root
-  pwd: ""
-  database: ai-chat
-  timeout: 5
-  maxIdleConnPerHost: 2
-  readConsistency: eventualConsistency
-  idleConnTimeout: 60
 `, tokenizerURL)
 	if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)

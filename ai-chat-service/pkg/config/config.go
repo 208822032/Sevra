@@ -33,36 +33,27 @@ type Config struct {
 		MinResponseTokens int     `mapstructure:"min_response_tokens"`
 		ContextTTL        int     `mapstructure:"context_ttl"`
 		ContextLen        int     `mapstructure:"context_len"`
-		RouteMode         string  `mapstructure:"route_mode"`
 	}
 	Providers []provider.ProviderProfile `mapstructure:"providers"`
 	Retrieval struct {
-		Semantic struct {
-			Enabled     bool    `mapstructure:"enabled"`
-			Mode        string  `mapstructure:"mode"`
-			TopK        int     `mapstructure:"top_k"`
-			Threshold   float64 `mapstructure:"threshold"`
-			CorpusLimit int     `mapstructure:"corpus_limit"`
-			ANN         struct {
-				TopK               int     `mapstructure:"top_k"`
-				MinScoreGap        float64 `mapstructure:"min_score_gap"`
-				SampleEnabled      bool    `mapstructure:"sample_enabled"`
-				SampleRate         float64 `mapstructure:"sample_rate"`
-				ExportFallbackOnly bool    `mapstructure:"export_fallback_only"`
-				ExportPath         string  `mapstructure:"export_path"`
-			} `mapstructure:"ann"`
-			EmbeddingModel   string `mapstructure:"embedding_model"`
-			EmbeddingProfile string `mapstructure:"embedding_profile"`
-			EmbeddingDim     int    `mapstructure:"embedding_dim"`
-			AsyncBackfill    bool   `mapstructure:"async_backfill"`
-			ShadowANN        struct {
-				Enabled        bool    `mapstructure:"enabled"`
-				TopK           int     `mapstructure:"top_k"`
-				ScoreThreshold float64 `mapstructure:"score_threshold"`
-				LogDiffOnly    bool    `mapstructure:"log_diff_only"`
-				SampleRate     float64 `mapstructure:"sample_rate"`
-			} `mapstructure:"shadow_ann"`
-		} `mapstructure:"semantic"`
+		KVLite struct {
+			Enabled       bool    `mapstructure:"enabled"`
+			Address       string  `mapstructure:"address"`
+			StartupPolicy string  `mapstructure:"startup_policy"`
+			TopK          int     `mapstructure:"top_k"`
+			Threshold     float64 `mapstructure:"threshold"`
+			TimeoutMS     int     `mapstructure:"timeout_ms"`
+			PoolSize      int     `mapstructure:"pool_size"`
+			MaxIdle       int     `mapstructure:"max_idle"`
+			Scope         struct {
+				Tenant        string `mapstructure:"tenant"`
+				KnowledgeBase string `mapstructure:"knowledge_base"`
+				CorpusVersion string `mapstructure:"corpus_version"`
+				Provider      string `mapstructure:"provider"`
+				Model         string `mapstructure:"model"`
+				PromptVersion string `mapstructure:"prompt_version"`
+			} `mapstructure:"scope"`
+		} `mapstructure:"kvlite"`
 	} `mapstructure:"retrieval"`
 	Context struct {
 		Backend         string `mapstructure:"context_backend"`
@@ -105,35 +96,12 @@ type Config struct {
 			Address string
 		}
 	}
-	VectorDB struct {
-		Url                string
-		Username           string
-		Pwd                string
-		Database           string
-		Timeout            int
-		MaxIdleConnPerHost int
-		ReadConsistency    string
-		IdleConnTimeout    int
-	}
 }
 
 var conf *Config
 
 func LoadConfig(filePath string, typ ...string) (*Config, error) {
 	v := viper.New()
-	v.SetDefault("retrieval.semantic.async_backfill", true)
-	v.SetDefault("retrieval.semantic.mode", "brute_force")
-	v.SetDefault("retrieval.semantic.ann.top_k", 3)
-	v.SetDefault("retrieval.semantic.ann.min_score_gap", 0.05)
-	v.SetDefault("retrieval.semantic.ann.sample_enabled", false)
-	v.SetDefault("retrieval.semantic.ann.sample_rate", 0.1)
-	v.SetDefault("retrieval.semantic.ann.export_fallback_only", true)
-	v.SetDefault("retrieval.semantic.ann.export_path", "")
-	v.SetDefault("retrieval.semantic.shadow_ann.enabled", false)
-	v.SetDefault("retrieval.semantic.shadow_ann.top_k", 4)
-	v.SetDefault("retrieval.semantic.shadow_ann.score_threshold", 0.8)
-	v.SetDefault("retrieval.semantic.shadow_ann.log_diff_only", true)
-	v.SetDefault("retrieval.semantic.shadow_ann.sample_rate", 1.0)
 	v.SetConfigFile(filePath)
 	if len(typ) > 0 {
 		v.SetConfigType(typ[0])
@@ -147,12 +115,29 @@ func LoadConfig(filePath string, typ ...string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	normalizedMode, err := normalizeRetrievalSemanticMode(cfg.Retrieval.Semantic.Mode)
-	if err != nil {
+	if err := validateKVLiteRetrievalConfig(cfg); err != nil {
 		return nil, err
 	}
-	cfg.Retrieval.Semantic.Mode = normalizedMode
 	return cfg, nil
+}
+
+func validateKVLiteRetrievalConfig(cfg *Config) error {
+	if cfg == nil || !cfg.Retrieval.KVLite.Enabled {
+		return nil
+	}
+	retrieval := cfg.Retrieval.KVLite
+	policy := strings.ToLower(strings.TrimSpace(retrieval.StartupPolicy))
+	if policy != "reject" && policy != "fallback_llm" {
+		return fmt.Errorf("retrieval.kvlite.startup_policy must be reject or fallback_llm")
+	}
+	if strings.TrimSpace(retrieval.Address) == "" || strings.TrimSpace(retrieval.Scope.Tenant) == "" ||
+		strings.TrimSpace(retrieval.Scope.KnowledgeBase) == "" || strings.TrimSpace(retrieval.Scope.CorpusVersion) == "" {
+		return fmt.Errorf("retrieval.kvlite.address and scope tenant, knowledge_base, corpus_version are required when enabled")
+	}
+	if retrieval.TopK <= 0 || retrieval.TopK > 1024 || retrieval.Threshold < -1 || retrieval.Threshold > 1 || retrieval.TimeoutMS <= 0 || retrieval.PoolSize <= 0 || retrieval.MaxIdle < 0 || retrieval.MaxIdle > retrieval.PoolSize {
+		return fmt.Errorf("invalid retrieval.kvlite top_k, threshold, timeout_ms, pool_size or max_idle")
+	}
+	return nil
 }
 
 func InitConfig(filePath string, typ ...string) {
@@ -208,15 +193,4 @@ func providerNameFromModel(model string) string {
 		return "deepseek"
 	}
 	return "openai"
-}
-
-func normalizeRetrievalSemanticMode(mode string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "", "brute_force":
-		return "brute_force", nil
-	case "ann":
-		return "ann", nil
-	default:
-		return "", fmt.Errorf("unsupported retrieval.semantic.mode %q; expected brute_force or ann", mode)
-	}
 }

@@ -36,6 +36,24 @@ chat:
   context_ttl: 1800
   # 上下文消息条数
   context_len: 4
+retrieval:
+  kvlite:
+    # 独立于 context.kvlite 的知识检索服务。
+    enabled: true
+    address: "127.0.0.1:28080"
+    # 独立向量实例不可用时拒绝启动，避免无感退化为未检索聊天服务。
+    startup_policy: "reject"
+    # 当前路由只直返排名第一的命中；多于 1 的结果不参与选择。
+    top_k: 1
+    # 保守预校准保护值；必须由 cmd/kvlite-calibrate 的真实语料 holdout 结果替换。
+    threshold: 0.90
+    timeout_ms: 3000
+    pool_size: 4
+    max_idle: 2
+    scope:
+      tenant: "local-dev"
+      knowledge_base: "ai-chat"
+      corpus_version: "v1"
 context:
   # redis | kvlite
   context_backend: "kvlite"
@@ -54,56 +72,12 @@ context:
     max_idle: 2
     max_retries: 1
     retry_backoff_ms: 50
-retrieval:
-  semantic:
-    # 语义兜底。默认关闭，打开后仍然保持 exact / normalized / alias / candidate 优先。
-    enabled: true
-    # 语义主路径模式。brute_force 保持保守默认；ann 会优先走 ANN，失败后硬回退 brute_force。
-    mode: ann
-    # brute-force 语义候选的 top-k 观察范围。
-    top_k: 4
-    # 语义命中阈值；越高越保守。
-    threshold: 0.94
-    ann:
-      # direct ANN gate 使用的 top-k，默认比 general semantic top_k 更保守。
-      top_k: 3
-      # direct ANN 的最小分差阈值，太小会回退到 brute_force。
-      min_score_gap: 0.05
-      # 样本采集默认关闭；开启后建议先只采 fallback / miss。
-      sample_enabled: false
-      # 样本采样率，默认保守；仅在 sample_enabled=true 时生效。
-      sample_rate: 0.1
-      # 仅采 fallback / miss，关闭后可按比例采集全部 ANN 请求。
-      export_fallback_only: true
-      # JSONL 样本导出路径，默认留空不落盘。
-      export_path: ""
-    # 限制每个 scope 内参与 brute-force 的语义候选数。
-    corpus_limit: 128
-    # 没有可用 embedding provider 时使用的占位模型名。
-    embedding_model: "placeholder-hash-embedding"
-    # 评估时可显式选择的 embeddings provider profile。默认留给 CLI 通过 --embedding-profile 覆盖。
-    embedding_profile: "openai-embeddings"
-    # 占位向量维度。
-    embedding_dim: 64
-    # 回答写回后是否异步补写 embedding。关闭后语义检索仍可读已存在的 embedding，但不会自动补写。
-    async_backfill: true
-    shadow_ann:
-      # 影子 ANN 只记录不决策，默认关闭。
-      enabled: false
-      # 影子 ANN 记录的 top-k 候选数。
-      top_k: 4
-      # 影子 ANN 命中阈值。
-      score_threshold: 0.8
-      # 只记录差异样本，避免日志过重。
-      log_diff_only: true
-      # 影子采样率，1.0 表示全量采样。
-      sample_rate: 1.0
 redis:
-  host: "192.168.36.141"
+  host: "127.0.0.1"
   port: 6379
   pwd: "123456"
 mysql:
-  dsn: "root:123456@tcp(127.0.0.1:3306)/ai_chat?collation=utf8mb4_unicode_ci&charset=utf8mb4"
+  dsn: "ai_chat:123456@tcp(127.0.0.1:3306)/ai_chat?collation=utf8mb4_unicode_ci&charset=utf8mb4"
   maxLifeTime: 3600
   maxOpenConn: 10
   maxIdleConn: 10
@@ -115,23 +89,7 @@ dependOn:
     address: "localhost:50054"
     accessToken: "ang1chubdev1ozhome256487d22sapguuv1ozhom"
   tokenizer:
-    address: "http://192.168.36.141:3002"
-vectorDB:
-  # 访问地址
-  url: "http://lb-4u4r1fk4-1ys6gv3rpmdan420.clb.ap-guangzhou.tencentclb.com:60000"
-  # 用户名
-  username: "root"
-  # 密码
-  pwd: "YaUfVueWZJ20e4ghyLlBT8Dou5OapwpFTUq50oft"
-  database: "ai-chat"
-  # 请求超时时长s
-  timeout: 5
-  # 最大空闲连接数
-  maxIdleConnPerHost: 2
-  # 读一致性： strongConsistency(强一致性)，eventualConsistency(最终一致性)
-  readConsistency: "eventualConsistency"
-  # 空闲连接超时时长s
-  idleConnTimeout: 60
+    address: "http://127.0.0.1:3002"
 providers:
   - name: "deepseek"
     display_name: "DeepSeek"
@@ -167,25 +125,6 @@ providers:
     default_reserved_completion_tokens: 2048
     enabled: true
     priority: 95
-    timeout_ms: 60000
-  - name: "openai-embeddings"
-    display_name: "Mock OpenAI Embeddings"
-    kind: "openai-compatible"
-    # 本地 mock-openai-api 提供的 OpenAI-compatible embeddings endpoint。
-    base_url: "http://127.0.0.1:8083/v1"
-    api_key: "ey84prEhw5u43780yjr3dDngKiejh7ksSdkFs8nth0y5nr9i2940"
-    default_model: "text-embedding-ada-002"
-    embedding_model: "text-embedding-ada-002"
-    models:
-      - "text-embedding-ada-002"
-      - "text-embedding-3-small"
-    supports_stream: false
-    supports_non_stream: false
-    supports_embeddings: true
-    context_window: 8192
-    default_reserved_completion_tokens: 0
-    enabled: true
-    priority: 94
     timeout_ms: 60000
   - name: "qwen"
     display_name: "Qwen"

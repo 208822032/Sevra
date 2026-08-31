@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"ai-chat-service/chat-server/llm"
+	"ai-chat-service/chat-server/retrieval/kvlite"
 	"ai-chat-service/proto"
 
 	"google.golang.org/grpc"
@@ -15,187 +16,110 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
-const (
-	defaultCacheHitThreshold = 0.99
-	defaultHybridThreshold   = 0.80
-)
-
 func (a *app) resolveRouteDecision(ctx context.Context, in *proto.ChatCompletionRequest) (llm.RouteDecision, error) {
 	decision := llm.RouteDecision{
 		Policy: llm.QueryPolicy{
-			Mode:                  strings.ToLower(strings.TrimSpace(a.config.Chat.RouteMode)),
+			Mode:                  "api_only",
 			ShouldCallLLM:         true,
-			ShouldQueryLocal:      true,
+			ShouldQueryLocal:      false,
 			UseRetrievalAsContext: false,
 			DirectReturnLocal:     false,
-			Threshold:             defaultHybridThreshold,
-			Reason:                "auto",
+			Reason:                "kvlite_retrieval_disabled",
 		},
-		Mode:      llm.AnswerModeAPI,
-		Threshold: defaultHybridThreshold,
-		Provider:  llm.DetectProviderFromModel(a.openaiConf.Model),
-		Model:     a.openaiConf.Model,
+		Mode:             llm.AnswerModeAPI,
+		ShouldCallLLM:    true,
+		ShouldQueryLocal: false,
+		Provider:         llm.DetectProviderFromModel(a.openaiConf.Model),
+		Model:            a.openaiConf.Model,
+		Reason:           "kvlite_retrieval_disabled",
 	}
 	if a.providerProfile.Name != "" {
 		decision.Provider = a.providerProfile.Name
 	}
-	mode := decision.Policy.Mode
-	if mode == "" {
-		mode = "auto"
-	}
-
-	keywords := a.keywords(ctx, in)
-	if len(keywords) == 0 {
-		if mode == "local_only" {
-			decision.Mode = llm.AnswerModeLocal
-			decision.ShouldCallLLM = false
-			decision.ShouldQueryLocal = true
-			decision.DirectReturnLocal = true
-			decision.Reason = "local_only_without_hit"
+	if a == nil || a.vectorStore == nil {
+		if a != nil && strings.TrimSpace(a.retrievalDisabledReason) != "" {
+			decision.Reason = a.retrievalDisabledReason
 			decision.Policy.Reason = decision.Reason
-			decision.LocalAnswer = "本地知识库未命中，且当前策略禁止回源生成"
-			return decision, nil
 		}
-		decision.Policy.ShouldQueryLocal = false
-		decision.ShouldQueryLocal = false
-		decision.ShouldCallLLM = true
-		decision.Policy.Reason = "no_local_evidence"
-		decision.Reason = decision.Policy.Reason
 		return decision, nil
 	}
-
-	idStr, score, err := a.vectorData.QueryData(ctx, a.exactScopeQuery(keywords))
+	if in == nil || strings.TrimSpace(in.GetMessage()) == "" {
+		decision.Reason = "empty_query"
+		decision.Policy.Reason = decision.Reason
+		return decision, nil
+	}
+	scope, topK, threshold, err := a.kvliteRetrievalConfig()
 	if err != nil {
-		decision.ShouldQueryLocal = true
-		decision.Policy.ShouldQueryLocal = true
-		decision.Reason = "local_search_error"
+		decision.Reason = "kvlite_config_error"
 		decision.Policy.Reason = decision.Reason
 		return decision, nil
 	}
-	decision.RetrievalScore = float64(score)
+	decision.Policy.Mode = "kvlite_exact_then_hnsw"
 	decision.Policy.ShouldQueryLocal = true
+	decision.Policy.Threshold = threshold
+	decision.Policy.Scope, _ = kvlite.EncodeScope(scope)
+	decision.ShouldQueryLocal = true
+	decision.Threshold = threshold
 
-	if strings.TrimSpace(idStr) == "" {
-		if mode == "local_only" {
-			decision.Mode = llm.AnswerModeLocal
-			decision.ShouldCallLLM = false
-			decision.DirectReturnLocal = true
-			decision.Reason = "local_only_without_record"
-			decision.Policy.Reason = decision.Reason
-			decision.LocalAnswer = "本地知识库未命中，且当前策略禁止回源生成"
-			return decision, nil
-		}
-		decision.Reason = "no_local_record"
+	doc, err := a.vectorStore.Get(ctx, in.GetMessage(), scope)
+	if err != nil {
+		return decisionWithRetrievalFailure(decision, err), nil
+	}
+	if doc != nil {
+		return decisionWithKVLiteHit(decision, kvlite.Hit{Document: *doc, Score: 1}, "kvlite_exact_hit")
+	}
+	hits, err := a.vectorStore.Search(ctx, in.GetMessage(), scope, topK, threshold)
+	if err != nil {
+		return decisionWithRetrievalFailure(decision, err), nil
+	}
+	if len(hits) == 0 {
+		decision.Reason = "kvlite_no_hit"
 		decision.Policy.Reason = decision.Reason
 		return decision, nil
 	}
+	return decisionWithKVLiteHit(decision, hits[0], "kvlite_vector_hit")
+}
 
-	id, parseErr := parseRecordID(idStr)
-	if parseErr != nil {
-		decision.Reason = "invalid_record_id"
-		decision.Policy.Reason = decision.Reason
-		return decision, nil
+func (a *app) kvliteRetrievalConfig() (kvlite.LogicalScope, int, float64, error) {
+	if a == nil || a.config == nil {
+		return kvlite.LogicalScope{}, 0, 0, fmt.Errorf("missing config")
 	}
-	record, recordErr := a.data.GetById(id)
-	if recordErr != nil || record == nil {
-		decision.Reason = "record_lookup_failed"
-		decision.Policy.Reason = decision.Reason
-		return decision, nil
+	retrieval := a.config.Retrieval.KVLite
+	if !retrieval.Enabled {
+		return kvlite.LogicalScope{}, 0, 0, fmt.Errorf("retrieval disabled")
 	}
-	hit := llm.RetrievalHit{
-		RecordID:        strings.TrimSpace(idStr),
-		Score:           float64(score),
-		HitType:         hitTypeFromScore(float64(score)),
-		QuestionPreview: llm.PreviewText(record.UserMsg, 128),
-		AnswerPreview:   llm.PreviewText(record.AIMsg, 256),
-		Provider:        decision.Provider,
-		Model:           decision.Model,
-		SourceType:      llm.SourceTypeRetrieval,
-	}
-	if id > 0 {
-		hit.TurnSeq = id
-	}
-	decision.RetrievalHits = []llm.RetrievalHit{hit}
-	decision.LocalAnswer = record.AIMsg
+	return kvlite.LogicalScope{
+		Tenant:        retrieval.Scope.Tenant,
+		KnowledgeBase: retrieval.Scope.KnowledgeBase,
+		CorpusVersion: retrieval.Scope.CorpusVersion,
+		Provider:      retrieval.Scope.Provider,
+		Model:         retrieval.Scope.Model,
+		PromptVersion: retrieval.Scope.PromptVersion,
+	}, retrieval.TopK, retrieval.Threshold, nil
+}
 
-	switch {
-	case mode == "api_only":
-		decision.Mode = llm.AnswerModeAPI
-		decision.ShouldCallLLM = true
-		decision.UseRetrievalAsContext = false
-		decision.DirectReturnLocal = false
-		decision.Reason = "forced_api_only"
-	case mode == "local_only":
-		decision.Mode = llm.AnswerModeLocal
-		decision.ShouldCallLLM = false
-		decision.UseRetrievalAsContext = false
-		decision.DirectReturnLocal = true
-		decision.Reason = "forced_local_only"
-	case mode == "cache_hit_return" || score >= defaultCacheHitThreshold:
-		decision.Mode = llm.AnswerModeCacheHit
-		decision.ShouldCallLLM = false
-		decision.UseRetrievalAsContext = false
-		decision.DirectReturnLocal = true
-		decision.Policy.Threshold = defaultCacheHitThreshold
-		decision.Threshold = defaultCacheHitThreshold
-		decision.Reason = "cache_hit_return"
-	default:
-		decision.Mode = llm.AnswerModeHybrid
-		decision.ShouldCallLLM = true
-		decision.UseRetrievalAsContext = score >= defaultHybridThreshold || mode == "hybrid_rag_style"
-		decision.DirectReturnLocal = false
-		decision.Policy.Threshold = defaultHybridThreshold
-		decision.Threshold = defaultHybridThreshold
-		if decision.UseRetrievalAsContext {
-			decision.Reason = "hybrid_retrieval_context"
-		} else {
-			decision.Mode = llm.AnswerModeAPI
-			decision.Reason = "fallback_api"
-		}
-	}
-	decision.Policy.Mode = mode
-	decision.Policy.DirectReturnLocal = decision.DirectReturnLocal
-	decision.Policy.UseRetrievalAsContext = decision.UseRetrievalAsContext
-	decision.Policy.ShouldCallLLM = decision.ShouldCallLLM
-	decision.Policy.ShouldQueryLocal = true
-	decision.Policy.Threshold = decision.Threshold
+func decisionWithRetrievalFailure(decision llm.RouteDecision, err error) llm.RouteDecision {
+	decision.Reason = kvlite.FailureReason(err)
 	decision.Policy.Reason = decision.Reason
-	decision.Policy.Scope = "session+global"
+	return decision
+}
+
+func decisionWithKVLiteHit(decision llm.RouteDecision, hit kvlite.Hit, reason string) (llm.RouteDecision, error) {
+	var trace llm.AnswerTrace
+	if err := kvlite.AppendHitsToTrace(&trace, []kvlite.Hit{hit}); err != nil {
+		return decisionWithRetrievalFailure(decision, err), nil
+	}
+	decision.Mode = llm.AnswerModeKnowledgeBase
+	decision.ShouldCallLLM = false
+	decision.DirectReturnLocal = true
+	decision.RetrievalScore = hit.Score
+	decision.RetrievalHits = trace.RetrievedHits
+	decision.LocalAnswer = hit.Answer.Answer
+	decision.Reason = reason
+	decision.Policy.ShouldCallLLM = false
+	decision.Policy.DirectReturnLocal = true
+	decision.Policy.Reason = reason
 	return decision, nil
-}
-
-func (a *app) exactScopeQuery(keywords []string) map[string][]string {
-	query := map[string][]string{}
-	if len(keywords) > 0 {
-		query["keywords"] = []string{strings.Join(keywords, ",")}
-	}
-	if a != nil && strings.TrimSpace(a.providerProfile.Name) != "" {
-		query["provider"] = []string{strings.TrimSpace(a.providerProfile.Name)}
-	}
-	if a != nil && strings.TrimSpace(a.openaiConf.Model) != "" {
-		query["model"] = []string{strings.TrimSpace(a.openaiConf.Model)}
-	}
-	return query
-}
-
-func parseRecordID(value string) (int64, error) {
-	var id int64
-	_, err := fmt.Sscanf(strings.TrimSpace(value), "%d", &id)
-	if err != nil {
-		return 0, err
-	}
-	return id, nil
-}
-
-func hitTypeFromScore(score float64) string {
-	switch {
-	case score >= defaultCacheHitThreshold:
-		return "exact_norm_hit"
-	case score >= defaultHybridThreshold:
-		return "semantic_hit"
-	default:
-		return "fallback_hit"
-	}
 }
 
 func (a *app) retrievalPromptMessage(hits []llm.RetrievalHit, model string) openai.ChatCompletionMessage {

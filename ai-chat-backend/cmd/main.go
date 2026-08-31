@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"ai-chat-backend/pkg/controllers"
@@ -96,7 +97,7 @@ var (
 func main() {
 	flag.Parse() //读取config参数
 	// 监听系统信号，优雅关闭服务
-	ctx, stop := signal.NotifyContext(context.Background(), os.Kill, os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	//读取yaml配置文件

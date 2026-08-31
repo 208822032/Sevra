@@ -6,8 +6,7 @@ import (
 	"ai-chat-service/chat-server/llm"
 	metrics_bus "ai-chat-service/chat-server/metrics-bus"
 	"ai-chat-service/chat-server/provider"
-	"ai-chat-service/chat-server/qa"
-	vector_data "ai-chat-service/chat-server/vector-data"
+	"ai-chat-service/chat-server/retrieval/kvlite"
 	"ai-chat-service/pkg/config"
 	"ai-chat-service/pkg/log"
 	"ai-chat-service/pkg/zerror"
@@ -48,15 +47,11 @@ type app struct {
 	log                     log.ILogger
 	contextStore            chat_context.SessionStore
 	data                    data.IChatRecordsData
-	vectorData              vector_data.IChatRecordsData
+	vectorStore             kvlite.Store
+	retrievalDisabledReason string
 	providerRegistry        *provider.Registry
 	provider                provider.Provider
 	providerProfile         provider.ProviderProfile
-	qaRetriever             qa.Retriever
-	qaStore                 qa.Store
-	semanticMode            string
-	semanticShadowConfig    qa.SemanticShadowConfig
-	qaLookupResult          qa.LookupResult
 	selectedProvider        string
 	selectedModel           string
 	fallbackUsed            bool
@@ -68,8 +63,6 @@ type app struct {
 	sensitiveFn             func(context.Context, *proto.ChatCompletionRequest) (bool, string, error)
 	fastPathCache           *sessionFastPathCache
 	busMetrics              *metrics_bus.BusMetrics
-	semanticShadowQuery     string
-	semanticShadowRequestID string
 	sessionID               string
 	pendingTurn             *chat_context.TurnRecord
 	pendingMeta             *chat_context.SessionMeta
@@ -166,27 +159,24 @@ func (s *chatService) newApp(in *proto.ChatCompletionRequest, contextStore chat_
 	}
 	conf.Model = actualModel
 	return &app{
-		config:               s.config,
-		openaiConf:           conf,
-		log:                  s.log,
-		contextStore:         contextStore,
-		data:                 s.data,
-		vectorData:           s.vectorData,
-		providerRegistry:     registry,
-		provider:             actualProvider,
-		providerProfile:      actualProfile,
-		qaRetriever:          s.qaRetriever,
-		qaStore:              s.qaStore,
-		semanticMode:         semanticModeFromConfig(s.config),
-		semanticShadowConfig: semanticShadowConfigFromConfig(s.config),
-		selectedProvider:     selectedProvider,
-		selectedModel:        selectedModel,
-		fallbackUsed:         selection.FallbackUsed,
-		fallbackReason:       selection.FallbackReason,
-		keywordsFn:           s.keywordsFn,
-		sensitiveFn:          s.sensitiveFn,
-		fastPathCache:        s.ensureFastPathCache(),
-		busMetrics:           s.busMetrics,
+		config:                  s.config,
+		openaiConf:              conf,
+		log:                     s.log,
+		contextStore:            contextStore,
+		data:                    s.data,
+		vectorStore:             s.vectorStore,
+		retrievalDisabledReason: s.retrievalDisabledReason,
+		providerRegistry:        registry,
+		provider:                actualProvider,
+		providerProfile:         actualProfile,
+		selectedProvider:        selectedProvider,
+		selectedModel:           selectedModel,
+		fallbackUsed:            selection.FallbackUsed,
+		fallbackReason:          selection.FallbackReason,
+		keywordsFn:              s.keywordsFn,
+		sensitiveFn:             s.sensitiveFn,
+		fastPathCache:           s.ensureFastPathCache(),
+		busMetrics:              s.busMetrics,
 	}
 }
 func (a *app) getOpenaiClient() *openai.Client {

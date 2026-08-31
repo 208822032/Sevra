@@ -11,7 +11,7 @@
 - [openai-api-proxy](../openai-api-proxy)
 - [mock-openai-api](../mock-openai-api)
 - [ai-chat-web](../ai-chat-web)
-- [KVLite](../KVLite)
+- 外部部署的 KVLite（知识检索与会话上下文使用不同配置）
 
 ## 1. 项目整体链路
 
@@ -36,7 +36,6 @@ gRPC 核心服务]
 token 统计]
     S --> R[(Redis)]
     S --> M[(MySQL)]
-    S --> V[(VectorDB)]
     S --> O[OpenAI 兼容接口
 mock-openai-api / openai-api-proxy / 真实 OpenAI]
     S --> X[KVLite
@@ -48,13 +47,13 @@ mock-openai-api / openai-api-proxy / 真实 OpenAI]
 ### 1.1 各服务职责
 
 - [ai-chat-backend](../ai-chat-backend)：对外 HTTP 网关，接前端请求，把 `/api/chat-process` 转成 gRPC 调用，再把流式结果转回前端。
-- [ai-chat-service](../ai-chat-service)：核心聊天编排服务，负责上下文、过滤、模型调用、落库和向量检索。
+- [ai-chat-service](../ai-chat-service)：核心聊天编排服务，负责上下文、过滤、模型调用和聊天记录落库；新的知识检索客户端仍在开发中。
 - [keywords-filter](../keywords-filter)：提供敏感词/关键词能力，部署时通常起两个实例，分别承担敏感词和关键词服务。
 - [tokenizer](../tokenizer)：按模型计算 token 数，用于控制上下文长度。
 - [mock-openai-api](../mock-openai-api)：本地假 OpenAI 接口，便于离线调试。
 - [openai-api-proxy](../openai-api-proxy)：OpenAI 兼容代理，适合把上游请求转发到真实 OpenAI 或其他兼容服务。
 - [ai-chat-web](../ai-chat-web)：独立前端工程，适合开发态；后端服务本身也会从 `www/` 目录提供静态页面。
-- [KVLite](../KVLite)：可选的上下文后端，不是默认主路径，只有把 `context_backend` 切到 `kvlite` 时才需要启动。
+- KVLite：外部部署依赖。`context.kvlite` 仅用于会话上下文；知识检索将使用独立的 KVLite 向量服务配置。
 
 ### 1.2 主请求流
 
@@ -62,9 +61,9 @@ mock-openai-api / openai-api-proxy / 真实 OpenAI]
 
 1. 浏览器发起请求，通常先进入 `ai-chat-web`，或者直接打到 `ai-chat-backend`。
 2. `ai-chat-backend` 接收 `/api/chat-process`，把请求包装成 gRPC 调用，转给 `ai-chat-service`。
-3. `ai-chat-service` 先做敏感词/关键词处理，再结合上下文、Redis/MySQL/VectorDB 和 OpenAI 兼容接口生成结果。
+3. `ai-chat-service` 先做敏感词/关键词处理，再结合上下文、Redis/MySQL 和 OpenAI 兼容接口生成结果。
 4. 结果会以流式方式返回给 `ai-chat-backend`，再继续流式转给前端。
-5. `ai-chat-service` 的回答主流程是先返回流，再把 Redis / MySQL / VectorDB 的写入放到异步路径里做。
+5. `ai-chat-service` 的回答主流程是先返回流，再异步写入会话上下文和 MySQL 聊天记录。
 
 ## 2. 建议的启动顺序
 
@@ -76,13 +75,12 @@ mock-openai-api / openai-api-proxy / 真实 OpenAI]
 
 - Redis
 - MySQL
-- VectorDB
 - OpenAI 兼容接口
 
 如果你要启用 KVLite，再额外启动：
 
-- KVLite 主节点，默认 `9300`
-- 如有需要，再启动 KVLite 从节点
+- 会话 KVLite：仅当 `context_backend=kvlite` 时按 `context.kvlite.addr` 启动。
+- 知识检索 KVLite：按 [`KVLite 开发清单`](KV/kvlite_vector_backend_development.md) 的独立部署配置启动；不要复用旧 QA 数据或把会话端口当作向量服务端口。
 
 ### 2.2 再启动支撑服务
 
@@ -100,16 +98,15 @@ mock-openai-api / openai-api-proxy / 真实 OpenAI]
 |---|---:|---|---|
 | ai-chat-service | 50055 | `go run ./chat-server --config=dev.config.yaml` | `server.port`、`server.accessToken`、`chat.base_url`、`redis`、`mysql`、`dependOn.*` |
 | ai-chat-backend | 7080 | `go run ./cmd --config=dev.config.yaml` | `http.port`、`dependOn.ai-chat-service.address`、`accessToken` |
-| ai-chat-web | 1002 | `pnpm bootstrap && pnpm dev` | `.env.develop` 里的 `VITE_APP_API_BASE_URL` |
+| ai-chat-web | 5173 | `pnpm bootstrap && pnpm dev` | `.env.develop` 里的 `VITE_APP_API_BASE_URL` |
 
-### 2.4 如果启用 KVLite
+### 2.4 如果启用 KVLite 会话上下文
 
 | 服务 | 默认端口 | 启动方式 | 关键配置 |
 |---|---:|---|---|
-| KVLite master | 9300 | `make && ./kvstore --config config/master.conf` | `role=master`、`port=9300` |
-| KVLite slave | 8081（示例） | `./kvstore --config config/slave.conf` | `role=slave`、`master_ip`、`master_port` |
+| KVLite | 由 `context.kvlite.addr` 决定 | 使用外部 KVLite 部署配置启动 | 仅会话上下文使用此地址 |
 
-如果 `ai-chat-service` 仍然使用 Redis 作为上下文后端，那么 KVLite 可以不启动。只有把 `context_backend` 切到 `kvlite` 时，才需要它真正进入链路。
+如果 `ai-chat-service` 使用 Redis 作为上下文后端，那么会话 KVLite 可以不启动。知识检索 KVLite 的接入状态与会话后端独立，当前仍处于客户端开发阶段。
 
 ## 3. 逐服务启动说明
 
@@ -207,7 +204,7 @@ go run . --config=dev.config.yaml
 - 接收来自 `ai-chat-backend` 的 gRPC 请求
 - 做上下文判断和流式生成
 - 调用 tokenizer、keywords-filter、OpenAI 兼容接口
-- 把聊天记录写回 Redis / MySQL / VectorDB
+- 把会话上下文与聊天记录写回 KVLite/Redis 和 MySQL
 
 默认配置里最重要的字段是：
 
@@ -216,7 +213,7 @@ go run . --config=dev.config.yaml
 - `chat.api_key` 要能通过你配置的 OpenAI 兼容接口鉴权
 - `chat.base_url=http://localhost:8084/v1`，表示默认会走 `openai-api-proxy`
 - `dependOn.sensitive.address`、`dependOn.keywords.address`、`dependOn.tokenizer.address`
-- `redis`、`mysql`、`vectorDB`
+- `redis`、`mysql`、`context.*`
 
 如果你要切换到 KVLite，需要改：
 
@@ -224,32 +221,9 @@ go run . --config=dev.config.yaml
 - `context.context_fallback_to_redis=true|false`
 - `context.kvlite.addr`
 
-`ai-chat-service` 还支持一个独立的语义实验开关，不会改变上面的上下文主链路：
-
-```yaml
-retrieval:
-    semantic:
-        enabled: false
-        top_k: 4
-        threshold: 0.84
-        corpus_limit: 128
-        embedding_model: "placeholder-hash-embedding"
-        embedding_dim: 64
-        async_backfill: true
-```
-
-这里要注意几件事：
-
-- `enabled` 关闭时，语义 brute-force 不参与检索，回答写回也不会走语义 backfill。
-- `async_backfill` 只控制语义 embedding 的补写，不影响 lexical QA 记录本身的写入。
-- `corpus_limit` 是 brute-force 候选上限，不是 ANN 索引；这个阶段不要把它理解成向量库。
-- 如果 provider profile 支持 embeddings，服务会优先用 provider；否则退回占位 hash embedding。
-- 运行时可见的 trace 字段包括 `qa_hit_type`、`candidate_count`、`candidate_top_score`、`candidate_source`、`semantic_candidate_count`、`semantic_top_k`、`semantic_top_score`、`semantic_model`、`semantic_source`、`final_answer_source`。
-- 评估 lexical 和 semantic 的差异时，先跑 `bash ../ai-chat-service/scripts/bench_semantic_vs_lexical.sh`，它会调用 `cmd/retrieval-eval` 并在 `artifacts/benchmarks/semantic_vs_lexical/` 下输出 `report.json`、`report.md` 和 `report.txt`，再根据 wrong-hit、false-negative 和 semantic-only 收益判断是否值得进入 ANN 阶段。
-- 默认评估模式是 `placeholder`；如果要跑 provider 模式，`retrieval.semantic.embedding_profile` 默认指向本地 `mock-openai-api` 的 embeddings endpoint，你可以直接使用 `RETRIEVAL_EVAL_EMBEDDING_MODE=provider RETRIEVAL_EVAL_EMBEDDING_PROFILE=openai-embeddings bash ../ai-chat-service/scripts/bench_semantic_vs_lexical.sh`，前提是先启动 `mock-openai-api` 或 `start_all_services.sh`。
-- 如果要直接调用 CLI，可以用 `go run ./cmd/retrieval-eval --config dev.config.yaml --dataset chat-server/qa/testdata/retrieval_eval_suite.v1.json --embedding-mode provider --embedding-profile openai-embeddings`。
-
-一个实用的判断模板是：如果 semantic-only 收益很少、trace 也显示 lexical/candidate 已经足够覆盖当前样本，就继续保留 brute-force；如果 semantic-only 收益开始稳定出现，而且 `corpus_limit` 和 lookup latency 都在上升，再考虑 ANN / 向量索引原型。
+旧 QA、LSH/ANN、mock embedding、外部 VectorDB 和对应评估命令均已删除。新的知识检索
+会通过独立部署的 KVLite 向量服务接入；实施进度与部署边界见
+[`docs/KV/kvlite_vector_backend_development.md`](KV/kvlite_vector_backend_development.md)。
 
 启动命令：
 
@@ -290,7 +264,7 @@ go run ./cmd --config=dev.config.yaml
 - `VITE_APP_API_BASE_URL=http://localhost:7080/`
 - `VITE_GLOB_API_URL=/api`
 - `VITE_USER_CENTER=http://localhost:8082?sys=ai`
-- Vite 开发端口是 `1002`
+- Vite 开发端口是 `5173`
 
 启动命令：
 
@@ -303,27 +277,10 @@ pnpm dev
 
 ### 3.8 KVLite
 
-文件参考： [KVLite/README.md](../KVLite/README.md) 、 [KVLite/config/master.conf](../KVLite/config/master.conf) 、 [KVLite/config/slave.conf](../KVLite/config/slave.conf)
-
-KVLite 是可选的上下文后端，不是默认主路径。当前 `ai-chat-service` 默认还是 Redis，只有切换 `context_backend=kvlite` 时才需要把它启动起来。
-
-启动步骤：
-
-```bash
-cd KVLite
-git submodule init
-git submodule update
-make
-./kvstore --config config/master.conf
-```
-
-如果你要做主从测试，再启动一个从节点：
-
-```bash
-./kvstore --config config/slave.conf
-```
-
-默认主节点端口是 `9300`，`ai-chat-service` 里的 `context.kvlite.addr` 也应该指向这个地址。
+KVLite 是外部部署依赖。会话上下文仅在 `context_backend=kvlite` 时使用
+`context.kvlite.addr`；知识检索会使用单独的向量服务地址和数据目录。不要使用仓库内旧
+`KVLite/` 副本、旧 `9300` 示例端口或历史 QA 数据启动向量检索。当前已验证的部署要求见
+[`docs/KV/DEPENDENCY.md`](KV/DEPENDENCY.md)。
 
 ## 4. Docker / Swarm 部署指南
 
@@ -377,7 +334,6 @@ docker service logs -f ai-chat_ai-chat-service
 - openai-api-proxy
 - Redis
 - MySQL
-- VectorDB
 
 所以如果你想把整个系统完全跑通，这些外部依赖仍然需要你自己补齐，或者改成可访问的真实地址。
 
@@ -434,8 +390,7 @@ docker service logs -f ai-chat_ai-chat-service
 | [mock-openai-api/dev.config.yaml](../mock-openai-api/dev.config.yaml) | 本地 OpenAI Mock 配置 | `http.port=8083`、`http.access_token` |
 | [openai-api-proxy/dev.config.yaml](../openai-api-proxy/dev.config.yaml) | OpenAI 代理配置 | `http.port=8084`、`chat.api_keys`、`chat.base_url` |
 | [ai-chat-web/.env.develop](../ai-chat-web/.env.develop) | 前端开发配置 | `VITE_APP_API_BASE_URL`、`VITE_USER_CENTER` |
-| [KVLite/config/master.conf](../KVLite/config/master.conf) | KVLite 主节点配置 | `port=9300`、`role=master` |
-| [KVLite/config/slave.conf](../KVLite/config/slave.conf) | KVLite 从节点配置 | `role=slave`、`master_ip`、`master_port` |
+| [docs/KV/DEPENDENCY.md](KV/DEPENDENCY.md) | 外部 KVLite 部署边界 | 独立会话/向量地址与当前验证版本 |
 
 ### 5.2 三组最容易错的匹配关系
 
@@ -456,7 +411,7 @@ docker service logs -f ai-chat_ai-chat-service
 
 ### 6.2 `compose.yaml` 不是完整全家桶
 
-`ai-chat-stack/compose.yaml` 只管核心链路里的几个服务，没有把 Redis、MySQL、VectorDB、OpenAI 兼容服务一起编进去。所以它更像“核心业务栈”，不是“一键全量环境”。
+`ai-chat-stack/compose.yaml` 只管核心链路里的几个服务，没有把 Redis、MySQL、外部 KVLite、OpenAI 兼容服务一起编进去。所以它更像“核心业务栈”，不是“一键全量环境”。
 
 ### 6.3 backend 和 web 的关系
 
@@ -470,7 +425,7 @@ docker service logs -f ai-chat_ai-chat-service
 
 如果你的目标是“最快把项目跑起来”，推荐顺序是：
 
-1. 先起 Redis、MySQL、VectorDB 和 OpenAI 兼容接口
+1. 先起 Redis、MySQL 和 OpenAI 兼容接口；只有启用相应能力时再启动会话或向量 KVLite
 2. 再起 tokenizer、keywords-filter、ai-chat-service
 3. 再起 ai-chat-backend
 4. 最后起 ai-chat-web 或直接访问后端静态页

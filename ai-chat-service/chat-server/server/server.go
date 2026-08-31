@@ -6,8 +6,7 @@ import (
 	"ai-chat-service/chat-server/llm"
 	metrics_bus "ai-chat-service/chat-server/metrics-bus"
 	"ai-chat-service/chat-server/provider"
-	"ai-chat-service/chat-server/qa"
-	vector_data "ai-chat-service/chat-server/vector-data"
+	"ai-chat-service/chat-server/retrieval/kvlite"
 	"ai-chat-service/pkg/config"
 	"ai-chat-service/pkg/log"
 	"ai-chat-service/proto"
@@ -15,8 +14,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -27,40 +24,30 @@ import (
 
 type chatService struct {
 	proto.UnimplementedChatServer
-	config           *config.Config
-	log              log.ILogger
-	contextStore     chat_context.SessionStore
-	qaRetriever      qa.Retriever
-	qaStore          qa.Store
-	data             data.IChatRecordsData        //聊天记录数据库
-	vectorData       vector_data.IChatRecordsData //向量数据库
-	providerRegistry *provider.Registry
-	busMetrics       *metrics_bus.BusMetrics
-	keywordsFn       func(context.Context, *proto.ChatCompletionRequest) []string
-	sensitiveFn      func(context.Context, *proto.ChatCompletionRequest) (bool, string, error)
-	fastPathOnce     sync.Once
-	fastPathCache    *sessionFastPathCache
+	config                  *config.Config
+	log                     log.ILogger
+	contextStore            chat_context.SessionStore
+	data                    data.IChatRecordsData //聊天记录数据库
+	vectorStore             kvlite.Store
+	retrievalDisabledReason string
+	providerRegistry        *provider.Registry
+	busMetrics              *metrics_bus.BusMetrics
+	keywordsFn              func(context.Context, *proto.ChatCompletionRequest) []string
+	sensitiveFn             func(context.Context, *proto.ChatCompletionRequest) (bool, string, error)
+	fastPathOnce            sync.Once
+	fastPathCache           *sessionFastPathCache
 }
 
-func NewChatService(data data.IChatRecordsData, vectorData vector_data.IChatRecordsData, config *config.Config, log log.ILogger, busMetrics *metrics_bus.BusMetrics, contextStore chat_context.SessionStore, qaRetriever ...qa.Retriever) proto.ChatServer {
-	retriever := qa.NewNoopRetriever()
-	if len(qaRetriever) > 0 && qaRetriever[0] != nil {
-		retriever = qaRetriever[0]
-	}
-	var qaStore qa.Store
-	if store, ok := retriever.(qa.Store); ok {
-		qaStore = store
-	}
+func NewChatService(data data.IChatRecordsData, config *config.Config, log log.ILogger, busMetrics *metrics_bus.BusMetrics, contextStore chat_context.SessionStore, vectorStore kvlite.Store, retrievalDisabledReason string) proto.ChatServer {
 	svc := &chatService{
-		config:           config,
-		log:              log,
-		contextStore:     contextStore,
-		qaRetriever:      retriever,
-		qaStore:          qaStore,
-		data:             data,
-		vectorData:       vectorData,
-		busMetrics:       busMetrics,
-		providerRegistry: provider.NewRegistry(config.ProviderProfiles()),
+		config:                  config,
+		log:                     log,
+		contextStore:            contextStore,
+		data:                    data,
+		vectorStore:             vectorStore,
+		retrievalDisabledReason: retrievalDisabledReason,
+		busMetrics:              busMetrics,
+		providerRegistry:        provider.NewRegistry(config.ProviderProfiles()),
 	}
 	svc.ensureFastPathCache()
 	return svc
@@ -93,40 +80,7 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 		res := app.buildChatCompletionResponse(msg)
 		return res, nil
 	}
-	if hit, preflightResult, preflightErr := app.tryQAPreflight(ctx, in); preflightErr != nil {
-		s.log.Error(preflightErr)
-	} else if hit {
-		res, meta, buildErr := app.buildQAPreflightUnaryResponse(ctx, in, preflightResult)
-		if buildErr != nil {
-			s.log.Error(buildErr)
-		} else {
-			app.setResponseMetaTrailer(ctx, meta)
-			return res, nil
-		}
-	}
-
-	//关键词提取
-	//应用向量数据库时 考虑使用msg直接对比 而不是使用关键词对比 因为有些问题可能没有明显的关键词 但是向量数据库可以通过语义理解找到相似的问题
 	keywords := app.keywords(ctx, in)
-	if len(keywords) > 0 {
-		idStr, score, err := s.vectorData.QueryData(context.Background(), map[string][]string{"keywords": {strings.Join(keywords, ",")}})
-		if err != nil {
-			s.log.Error(err)
-		} else if score > 0.99 { //余弦相似度大于0.99认为是相似问题
-			id, err := strconv.ParseInt(idStr, 10, 64)
-			if err != nil {
-				s.log.Error(err)
-			} else {
-				record, err := s.data.GetById(id)
-				if err != nil {
-					s.log.Error(err)
-				} else {
-					res := app.buildChatCompletionResponse(record.AIMsg)
-					return res, nil
-				}
-			}
-		}
-	}
 	decision, err := app.resolveRouteDecision(ctx, in)
 	if err != nil {
 		s.log.Error(err)
@@ -139,8 +93,7 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 		return nil, err
 	}
 	if decision.DirectReturnLocal {
-		res := app.buildChatCompletionResponse(decision.LocalAnswer)
-		return res, nil
+		return s.respondWithKnowledgeUnary(ctx, app, in, decision, keywords, tokens, currTokens)
 	}
 	providerReq := llm.ChatRequest{
 		Model:            req.Model,
@@ -181,7 +134,6 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 			TotalTokens:      int32(result.Usage.TotalTokens),
 		},
 	}
-	app.queueQABackfill(ctx, in, result.Message.Content, result.Provider, result.Model)
 	//启用协程保存上下文和聊天记录，避免阻塞主流程
 	go func() {
 		err := app.saveContext(result.ID, result.Message, result.Usage.CompletionTokens)
@@ -193,43 +145,7 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 	if result.Usage.UsageSource == "" {
 		result.Usage.UsageSource = llm.UsageSourceProvider
 	}
-	//持久化
-	go func() {
-		records := &data.ChatRecord{
-			UserMsg:         in.Message,
-			UserMsgTokens:   currTokens,
-			UserMsgKeywords: keywords,
-			AIMsg:           result.Message.Content,
-			AIMsgTokens:     result.Usage.CompletionTokens,
-			ReqTokens:       tokens,
-			CreateAt:        time.Now().Unix(),
-		}
-		err := s.data.Add(records)
-		if err != nil {
-			s.log.Error(err)
-			return
-		}
-		//保存到向量数据库
-		if len(keywords) > 0 {
-			list := []*vector_data.ChatRecord{
-				{
-					ID: strconv.FormatInt(records.ID, 10),
-					KVs: map[string]string{
-						"keywords":          strings.Join(keywords, ","),
-						"provider":          app.providerProfile.Name,
-						"model":             app.openaiConf.Model,
-						"selected_provider": app.selectedProvider,
-						"selected_model":    app.selectedModel,
-					},
-				},
-			}
-			err = s.vectorData.UpsertData(context.Background(), list)
-			if err != nil {
-				s.log.Error(err)
-				return
-			}
-		}
-	}()
+	s.persistChatRecord(in, keywords, tokens, currTokens, result.Message.Content, result.Usage.CompletionTokens)
 	return res, nil
 }
 func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stream proto.Chat_ChatCompletionStreamServer) error {
@@ -273,24 +189,6 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 		}
 		return nil
 	}
-	if hit, preflightResult, preflightErr := app.tryQAPreflight(stream.Context(), in); preflightErr != nil {
-		s.log.Error(preflightErr)
-	} else if hit {
-		chunks, meta, buildErr := app.buildQAPreflightStreamResponses(stream.Context(), in, preflightResult)
-		if buildErr != nil {
-			s.log.Error(buildErr)
-		} else {
-			app.setResponseMetaTrailer(stream.Context(), meta)
-			for _, chunk := range chunks {
-				if err := stream.Send(chunk); err != nil {
-					s.log.Error(err)
-					return err
-				}
-			}
-			return nil
-		}
-	}
-
 	decision, err := app.resolveRouteDecision(stream.Context(), in)
 	if err != nil {
 		s.log.Error(err)
@@ -307,49 +205,8 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 		return err
 	}
 	if decision.DirectReturnLocal {
-		resultID := uuid.New().String()
-		localMessage := openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: decision.LocalAnswer}
-		resultTokens, resultTokenSource, tokenErr := tokenizer.GetTokensWithSource(&localMessage, app.openaiConf.Model)
-		if tokenErr != nil {
-			s.log.Error(tokenErr)
-		}
-		if resultTokens == 0 {
-			resultTokens = len([]rune(localMessage.Content)) / 4
-		}
-		usage := llm.UsageInfo{
-			PromptTokens:     tokens,
-			CompletionTokens: resultTokens,
-			TotalTokens:      tokens + resultTokens,
-			UsageSource:      resultTokenSource,
-		}
-		trace := app.buildAnswerTrace(decision, llm.FinalAnswerSourceLocal, true, decision.Mode == llm.AnswerModeCacheHit, decision.LocalAnswer)
-		meta := app.buildResponseMeta(trace, usage, tokens)
-		app.setResponseMetaTrailer(stream.Context(), meta)
-		startRes := app.buildChatCompletionStreamResponse(resultID, "", "")
-		endRes := app.buildChatCompletionStreamResponse(resultID, "", "stop")
-		if err := stream.Send(startRes); err != nil {
-			s.log.Error(err)
-			return err
-		}
-		resList := app.buildChatCompletionStreamResponseList(resultID, decision.LocalAnswer)
-		for _, res := range resList {
-			if err := stream.Send(res); err != nil {
-				s.log.Error(err)
-				return err
-			}
-		}
-		if err := stream.Send(endRes); err != nil {
-			s.log.Error(err)
-			return err
-		}
-		go func() {
-			if err := app.saveContext(resultID, localMessage, resultTokens); err != nil {
-				s.log.Error(err)
-			}
-		}()
-		return nil
+		return s.respondWithKnowledgeStream(stream, app, in, decision, keywords, tokens, currTokens)
 	}
-
 	providerReq := llm.ChatRequest{
 		Model:            req.Model,
 		Messages:         req.Messages,
@@ -425,14 +282,9 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 		TotalTokens:      tokens + resultTokens,
 		UsageSource:      resultTokenSource,
 	}
-	trace := app.buildAnswerTrace(decision, llm.FinalAnswerSourceLLM, decision.UseRetrievalAsContext, false, completionContent)
-	if decision.UseRetrievalAsContext {
-		trace.FinalAnswerSource = llm.FinalAnswerSourceHybridLLM
-	}
+	trace := app.buildAnswerTrace(decision, llm.FinalAnswerSourceLLM, false, false)
 	meta := app.buildResponseMeta(trace, usage, tokens)
 	app.setResponseMetaTrailer(stream.Context(), meta)
-	app.queueQABackfill(stream.Context(), in, completionContent, app.providerProfile.Name, app.openaiConf.Model)
-
 	go func() {
 		err := app.saveContext(resultID, resultMessage, resultTokens)
 		if err != nil {
@@ -440,56 +292,107 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 			return
 		}
 	}()
-	go func() {
-		if s.busMetrics != nil {
-			s.busMetrics.QuestionsTotalCounter.Inc()
-		}
-		records := &data.ChatRecord{
-			UserMsg:         in.Message,
-			UserMsgTokens:   currTokens,
-			UserMsgKeywords: keywords,
-			AIMsg:           completionContent,
-			AIMsgTokens:     resultTokens,
-			ReqTokens:       tokens,
-			CreateAt:        time.Now().Unix(),
-		}
-		err := s.data.Add(records)
-		if err != nil {
-			s.log.Error(err)
-			return
-		}
-		//保存到向量数据库
-		if len(keywords) > 0 {
-			list := []*vector_data.ChatRecord{
-				{
-					ID: strconv.FormatInt(records.ID, 10),
-					KVs: map[string]string{
-						"keywords":          strings.Join(keywords, ","),
-						"provider":          app.providerProfile.Name,
-						"model":             app.openaiConf.Model,
-						"selected_provider": app.selectedProvider,
-						"selected_model":    app.selectedModel,
-					},
-				},
-			}
-			err = s.vectorData.UpsertData(context.Background(), list)
-			if err != nil {
-				s.log.Error(err)
-				return
-			}
-		}
-	}()
+	if s.busMetrics != nil {
+		s.busMetrics.QuestionsTotalCounter.Inc()
+	}
+	s.persistChatRecord(in, keywords, tokens, currTokens, completionContent, resultTokens)
 	return nil
 }
 
-func (a *app) buildAnswerTrace(decision llm.RouteDecision, finalAnswerSource string, usedLocalRetrieval bool, cacheHit bool, finalAnswer string) llm.AnswerTrace {
+func (s *chatService) respondWithKnowledgeUnary(ctx context.Context, app *app, in *proto.ChatCompletionRequest, decision llm.RouteDecision, keywords []string, promptTokens, userTokens int) (*proto.ChatCompletionResponse, error) {
+	assistantMessage := openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: decision.LocalAnswer}
+	completionTokens, tokenSource, err := tokenizer.GetTokensWithSource(&assistantMessage, app.openaiConf.Model)
+	if err != nil {
+		s.log.Error(err)
+	}
+	if completionTokens == 0 {
+		completionTokens = len([]rune(assistantMessage.Content)) / 4
+	}
+	res := app.buildChatCompletionResponse(assistantMessage.Content)
+	res.Usage = &proto.Usage{
+		PromptTokens:     int32(promptTokens),
+		CompletionTokens: int32(completionTokens),
+		TotalTokens:      int32(promptTokens + completionTokens),
+	}
+	trace := app.buildAnswerTrace(decision, llm.FinalAnswerSourceKVLite, true, false)
+	meta := app.buildResponseMeta(trace, llm.UsageInfo{
+		PromptTokens: promptTokens, CompletionTokens: completionTokens, TotalTokens: promptTokens + completionTokens, UsageSource: tokenSource,
+	}, promptTokens)
+	app.setResponseMetaTrailer(ctx, meta)
+	go func() {
+		if err := app.saveContext(res.Id, assistantMessage, completionTokens); err != nil {
+			s.log.Error(err)
+		}
+	}()
+	s.persistChatRecord(in, keywords, promptTokens, userTokens, assistantMessage.Content, completionTokens)
+	return res, nil
+}
+
+func (s *chatService) respondWithKnowledgeStream(stream proto.Chat_ChatCompletionStreamServer, app *app, in *proto.ChatCompletionRequest, decision llm.RouteDecision, keywords []string, promptTokens, userTokens int) error {
+	assistantMessage := openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: decision.LocalAnswer}
+	completionTokens, tokenSource, err := tokenizer.GetTokensWithSource(&assistantMessage, app.openaiConf.Model)
+	if err != nil {
+		s.log.Error(err)
+	}
+	if completionTokens == 0 {
+		completionTokens = len([]rune(assistantMessage.Content)) / 4
+	}
+	trace := app.buildAnswerTrace(decision, llm.FinalAnswerSourceKVLite, true, false)
+	meta := app.buildResponseMeta(trace, llm.UsageInfo{
+		PromptTokens: promptTokens, CompletionTokens: completionTokens, TotalTokens: promptTokens + completionTokens, UsageSource: tokenSource,
+	}, promptTokens)
+	app.setResponseMetaTrailer(stream.Context(), meta)
+	resultID := uuid.New().String()
+	if err := stream.Send(app.buildChatCompletionStreamResponse(resultID, "", "")); err != nil {
+		return err
+	}
+	for _, res := range app.buildChatCompletionStreamResponseList(resultID, assistantMessage.Content) {
+		if err := stream.Send(res); err != nil {
+			return err
+		}
+	}
+	if err := stream.Send(app.buildChatCompletionStreamResponse(resultID, "", "stop")); err != nil {
+		return err
+	}
+	go func() {
+		if err := app.saveContext(resultID, assistantMessage, completionTokens); err != nil {
+			s.log.Error(err)
+		}
+	}()
+	if s.busMetrics != nil {
+		s.busMetrics.QuestionsTotalCounter.Inc()
+	}
+	s.persistChatRecord(in, keywords, promptTokens, userTokens, assistantMessage.Content, completionTokens)
+	return nil
+}
+
+func (s *chatService) persistChatRecord(in *proto.ChatCompletionRequest, keywords []string, promptTokens, userTokens int, answer string, answerTokens int) {
+	if s == nil || s.data == nil || in == nil {
+		return
+	}
+	go func() {
+		records := &data.ChatRecord{
+			UserMsg:         in.Message,
+			UserMsgTokens:   userTokens,
+			UserMsgKeywords: keywords,
+			AIMsg:           answer,
+			AIMsgTokens:     answerTokens,
+			ReqTokens:       promptTokens,
+			CreateAt:        time.Now().Unix(),
+		}
+		if err := s.data.Add(records); err != nil {
+			s.log.Error(err)
+		}
+	}()
+}
+
+func (a *app) buildAnswerTrace(decision llm.RouteDecision, finalAnswerSource string, usedLocalRetrieval bool, cacheHit bool) llm.AnswerTrace {
 	providerName := ""
 	modelName := ""
 	selectedProvider := ""
 	selectedModel := ""
 	fallbackUsed := false
 	fallbackReason := ""
-	qaResult := qa.LookupResult{}
 	if a != nil {
 		providerName = a.providerProfile.Name
 		modelName = a.openaiConf.Model
@@ -497,56 +400,31 @@ func (a *app) buildAnswerTrace(decision llm.RouteDecision, finalAnswerSource str
 		selectedModel = a.selectedModel
 		fallbackUsed = a.fallbackUsed
 		fallbackReason = a.fallbackReason
-		qaResult = a.qaLookupResult
 	}
 	trace := llm.AnswerTrace{
-		AnswerMode:                  decision.Mode,
-		Provider:                    providerName,
-		Model:                       modelName,
-		SelectedProvider:            selectedProvider,
-		SelectedModel:               selectedModel,
-		ActualProvider:              providerName,
-		ActualModel:                 modelName,
-		FallbackUsed:                fallbackUsed,
-		FallbackReason:              fallbackReason,
-		AnswerSourceKind:            answerSourceKindFromDecision(cacheHit),
-		UsedLocalRetrieval:          usedLocalRetrieval,
-		CacheHit:                    cacheHit,
-		FinalAnswerSource:           finalAnswerSource,
-		GenerationProvider:          providerName,
-		GenerationModel:             modelName,
-		RetrievedHits:               decision.RetrievalHits,
-		QAHitType:                   qaResult.HitType,
-		CandidateCount:              qaResult.CandidateCount,
-		CandidateTopScore:           qaResult.CandidateTopScore,
-		CandidateSource:             qaResult.CandidateSource,
-		SemanticCandidateCount:      qaResult.SemanticCandidateCount,
-		SemanticTopK:                qaResult.SemanticTopK,
-		SemanticTopScore:            qaResult.SemanticTopScore,
-		SemanticANNTopK:             qaResult.SemanticANNTopK,
-		SemanticANNTopScore:         qaResult.SemanticANNTopScore,
-		SemanticANNTop2Score:        qaResult.SemanticANNTop2Score,
-		SemanticANNScoreGap:         qaResult.SemanticANNScoreGap,
-		SemanticANNMinScoreGap:      qaResult.SemanticANNMinScoreGap,
-		SemanticANNDecision:         qaResult.SemanticANNDecision,
-		SemanticModel:               qaResult.SemanticModel,
-		SemanticSource:              qaResult.SemanticSource,
-		SemanticModeRequested:       qaResult.SemanticModeRequested,
-		SemanticModeUsed:            qaResult.SemanticModeUsed,
-		SemanticFallbackUsed:        qaResult.SemanticFallbackUsed,
-		SemanticFallbackReason:      qaResult.SemanticFallbackReason,
-		SemanticLatencyMS:           qaResult.SemanticLatencyMS,
-		SemanticANNLatencyMS:        qaResult.SemanticANNLatencyMS,
-		SemanticBruteForceLatencyMS: qaResult.SemanticBruteForceLatencyMS,
+		AnswerMode:         decision.Mode,
+		Provider:           providerName,
+		Model:              modelName,
+		SelectedProvider:   selectedProvider,
+		SelectedModel:      selectedModel,
+		ActualProvider:     providerName,
+		ActualModel:        modelName,
+		FallbackUsed:       fallbackUsed,
+		FallbackReason:     fallbackReason,
+		AnswerSourceKind:   answerSourceKindFromDecision(cacheHit),
+		UsedLocalRetrieval: usedLocalRetrieval,
+		CacheHit:           cacheHit,
+		FinalAnswerSource:  finalAnswerSource,
+		GenerationProvider: providerName,
+		GenerationModel:    modelName,
+		RetrievedHits:      decision.RetrievalHits,
 	}
-	a.finalizeSemanticLookupTrace(&trace, qaResult)
-	a.finalizeSemanticShadowTrace(&trace, qaResult, finalAnswer)
+	if usedLocalRetrieval {
+		trace.AnswerSourceKind = llm.AnswerSourceKindKnowledgeBase
+	}
 	return trace
 }
 
-func answerSourceKindFromDecision(cacheHit bool) string {
-	if cacheHit {
-		return llm.AnswerSourceKindCache
-	}
+func answerSourceKindFromDecision(_ bool) string {
 	return llm.AnswerSourceKindAI
 }

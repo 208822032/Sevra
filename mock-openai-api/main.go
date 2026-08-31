@@ -2,6 +2,7 @@ package main
 
 import (
 	bytes2 "bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -13,7 +14,10 @@ import (
 	"mock-openai-api/middleware"
 	"mock-openai-api/pkg/config"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -28,6 +32,8 @@ var (
 
 func main() {
 	flag.Parse()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	config.InitConfig(*configFile)
 	cnf := config.GetConfig()
 	gin.SetMode(cnf.Http.Mode)
@@ -38,8 +44,16 @@ func main() {
 	v1 := r.Group("/v1")
 	v1.POST("/chat/completions", chatCompletion)
 	v1.POST("/embeddings", embeddings)
-	err := r.Run(fmt.Sprintf("%s:%d", cnf.Http.Host, cnf.Http.Port))
-	if err != nil {
+	server := &http.Server{Addr: fmt.Sprintf("%s:%d", cnf.Http.Host, cnf.Http.Port), Handler: r}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("mock-openai-api shutdown: %v", err)
+		}
+	}()
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Println(err)
 	}
 }
