@@ -1,6 +1,7 @@
 from nuxt import route, logger, Request
 from nuxt.repositorys.validation import fields, use_args
 import traceback
+import math
 import tiktoken
 
 encoding_cache = {}
@@ -35,8 +36,12 @@ def num_tokens_from_messages(messages, model="gpt-3.5-turbo"):
         try:
             encoding = tiktoken.encoding_for_model(model)
         except KeyError:
-            encoding = tiktoken.get_encoding("cl100k_base")
+            logger.warning("unknown tokenizer model %s; using local estimate", model)
+            encoding = None
         encoding_cache[model] = encoding
+    if encoding is None:
+        return estimate_tokens(messages)
+
     num_tokens = 0
     for message in messages:
         num_tokens += 4  # every message follows <im_start>{role/name}\n{content}<im_end>\n
@@ -47,4 +52,17 @@ def num_tokens_from_messages(messages, model="gpt-3.5-turbo"):
             if key == "name":  # if there's a name, the role is omitted
                 num_tokens += -1  # role is always required and always 1 token
     num_tokens += 3  # every reply is primed with <im_start>assistant
+    return num_tokens
+
+
+def estimate_tokens(messages):
+    """A network-free fallback for context-budget estimation."""
+    num_tokens = 3
+    for message in messages:
+        num_tokens += 4
+        for key, value in message.items():
+            text = value if isinstance(value, str) else str(value)
+            num_tokens += max(1, math.ceil(len(text) / 4))
+            if key == "name":
+                num_tokens -= 1
     return num_tokens

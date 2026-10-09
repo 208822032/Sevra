@@ -45,6 +45,7 @@ type Config struct {
 			TimeoutMS     int     `mapstructure:"timeout_ms"`
 			PoolSize      int     `mapstructure:"pool_size"`
 			MaxIdle       int     `mapstructure:"max_idle"`
+			AutoWriteback bool    `mapstructure:"auto_writeback"`
 			Scope         struct {
 				Tenant        string `mapstructure:"tenant"`
 				KnowledgeBase string `mapstructure:"knowledge_base"`

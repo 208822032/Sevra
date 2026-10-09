@@ -46,10 +46,12 @@ retrieval:
     # 当前路由只直返排名第一的命中；多于 1 的结果不参与选择。
     top_k: 1
     # 保守预校准保护值；必须由 cmd/kvlite-calibrate 的真实语料 holdout 结果替换。
-    threshold: 0.90
+    threshold: 0.75
     timeout_ms: 3000
     pool_size: 4
     max_idle: 2
+    # API 未命中后，将成功回答异步直接写入知识 KVLite（开发测试开关）。
+    auto_writeback: true
     scope:
       tenant: "local-dev"
       knowledge_base: "ai-chat"

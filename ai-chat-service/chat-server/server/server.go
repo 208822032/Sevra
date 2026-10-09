@@ -136,11 +136,10 @@ func (s *chatService) ChatCompletion(ctx context.Context, in *proto.ChatCompleti
 	}
 	//启用协程保存上下文和聊天记录，避免阻塞主流程
 	go func() {
-		err := app.saveContext(result.ID, result.Message, result.Usage.CompletionTokens)
-		if err != nil {
+		if err := app.saveContext(result.ID, result.Message, result.Usage.CompletionTokens); err != nil {
 			s.log.Error(err)
-			return
 		}
+		app.autoWriteback(context.Background(), in.GetMessage(), result.Message.Content)
 	}()
 	if result.Usage.UsageSource == "" {
 		result.Usage.UsageSource = llm.UsageSourceProvider
@@ -286,11 +285,10 @@ func (s *chatService) ChatCompletionStream(in *proto.ChatCompletionRequest, stre
 	meta := app.buildResponseMeta(trace, usage, tokens)
 	app.setResponseMetaTrailer(stream.Context(), meta)
 	go func() {
-		err := app.saveContext(resultID, resultMessage, resultTokens)
-		if err != nil {
+		if err := app.saveContext(resultID, resultMessage, resultTokens); err != nil {
 			s.log.Error(err)
-			return
 		}
+		app.autoWriteback(context.Background(), in.GetMessage(), completionContent)
 	}()
 	if s.busMetrics != nil {
 		s.busMetrics.QuestionsTotalCounter.Inc()

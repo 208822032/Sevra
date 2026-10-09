@@ -1,6 +1,6 @@
 server:
   ip: 0.0.0.0
-  port: 50051
+  port: 50055
   accessToken: "me256487ang1chubdpdialoud22sev1ozhoguumyqca"
 log:
   # panic,fatal,error,warn,warning,info,debug,trace
@@ -36,12 +36,33 @@ chat:
   context_ttl: 1800
   # 上下文消息条数
   context_len: 4
+retrieval:
+  kvlite:
+    enabled: true
+    address: "kvlite-vector:28080"
+    startup_policy: "reject"
+    top_k: 1
+    threshold: 0.75
+    timeout_ms: 3000
+    pool_size: 4
+    max_idle: 2
+    auto_writeback: true
+    scope:
+      tenant: "local-dev"
+      knowledge_base: "ai-chat"
+      corpus_version: "v1"
+context:
+  context_backend: "kvlite"
+  context_fallback_to_redis: true
+  context_namespace: "ai:chat"
+  kvlite:
+    addr: "kvlite-session:9300"
 redis:
-  host: "192.168.239.161"
+  host: "host.docker.internal"
   port: 6379
   pwd: "123456"
 mysql:
-  dsn: "root:123456@tcp(192.168.239.161:3306)/ai_chat?collation=utf8mb4_unicode_ci&charset=utf8mb4"
+  dsn: "ai_chat:123456@tcp(host.docker.internal:3306)/ai_chat?collation=utf8mb4_unicode_ci&charset=utf8mb4"
   maxLifeTime: 3600
   maxOpenConn: 10
   maxIdleConn: 10

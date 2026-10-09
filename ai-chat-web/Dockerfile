@@ -1,5 +1,6 @@
-FROM quay.io/0voice/node:lts-alpine AS frontend
+FROM node:22-alpine AS frontend
 RUN npm install pnpm -g
+RUN pnpm config set dangerouslyAllowAllBuilds true
 COPY . /app
 WORKDIR /app
 RUN pnpm bootstrap

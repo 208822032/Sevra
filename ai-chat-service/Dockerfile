@@ -1,5 +1,5 @@
 # 编译阶段
-FROM quay.io/0voice/golang:1.20 as stage0
+FROM golang:1.23 as stage0
 RUN go env -w GOPROXY=https://proxy.golang.com.cn,https://goproxy.cn,direct
 ADD ./ /src/ai-chat-service
 WORKDIR /src/ai-chat-service

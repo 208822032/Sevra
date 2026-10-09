@@ -85,5 +85,5 @@ providers:
     timeout_ms: 60000
 dependOn:
   ai-chat-service:
-    address: "ai-chat-service:50051"
+    address: "ai-chat-service:50055"
     accessToken: "me256487ang1chubdpdialoud22sev1ozhoguumyqca"
